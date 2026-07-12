@@ -52,32 +52,33 @@ If you need to run this modified cuMF independently, navigate to this directory 
 
 ## 5. Performance and RMSE Results
 
-Here are the benchmarking results on identical frozen splits comparing **APR-BALS** (our baseline) against the standard FP32 baseline and **cuMF** on the Netflix dataset. 
+Here are the benchmarking results on identical frozen splits on the Netflix dataset.
 
-As shown, the APR-BALS implementation achieves up to **14.6x speedup** over the standard FP32 baseline and up to **6.9x speedup** over cuMF, with virtually identical test RMSE (differences < 0.001).
+### 5.1 APR-BALS vs cuMF
+Comparison of our accelerated mixed-precision baseline (APR-BALS) against cuMF.
 
-| rank | code | ms/iter | Speedup (vs FP32) | Speedup (vs cuMF) | train RMSE | test RMSE |
-|---|---|---|---|---|---|---|
-| **K=16** | **APR-BALS mixed** | **53** | **4.56x** | **6.94x** | 0.782323 | 0.831057 |
-| | FP32 baseline | 242 | 1.00x | - | 0.782356 | 0.831081 |
-| *(F=20)* | cuMF-ALS | 368 | - | 1.00x | 0.771220 | 0.828840 |
-| **K=32** | **APR-BALS mixed** | **97** | **7.40x** | **5.15x** | 0.752649 | 0.823282 |
-| | FP32 baseline | 718 | 1.00x | - | 0.752687 | 0.823308 |
-| *(F=30)* | cuMF-ALS | 500 | - | 1.00x | 0.753987 | 0.824093 |
-| **K=48** | **APR-BALS mixed** | **152** | **10.44x** | **5.45x** | 0.736522 | 0.820479 |
-| | FP32 baseline | 1587 | 1.00x | - | 0.736567 | 0.820510 |
-| *(F=50)* | cuMF-ALS | 829 | - | 1.00x | 0.734113 | 0.820556 |
-| **K=64** | **APR-BALS mixed** | **273** | **13.58x** | **3.92x** | 0.726029 | 0.819080 |
-| | FP32 baseline | 3708 | 1.00x | - | 0.726076 | 0.819113 |
-| *(F=60)* | cuMF-ALS | 1071 | - | 1.00x | 0.727628 | 0.819547 |
-| **K=96** | **APR-BALS mixed** | **529** | **14.60x** | **3.97x** | 0.712923 | 0.817558 |
-| | FP32 baseline | 7723 | 1.00x | - | 0.712971 | 0.817593 |
-| *(F=100)*| cuMF-ALS | 2101 | - | 1.00x | 0.711658 | 0.817499 |
+| F (cuMF) | K (APR) | cuMF (ms/iter) | APR (ms/iter) | APR Speedup | cuMF RMSE | APR RMSE | Δ RMSE |
+|---|---|---|---|---|---|---|---|
+| 20 | 16 | 368 | 53 | **6.94x** | 0.8288 | 0.8311 | +0.0023 |
+| 30 | 32 | 500 | 97 | **5.15x** | 0.8241 | 0.8233 | -0.0008 |
+| 50 | 48 | 829 | 152 | **5.45x** | 0.8206 | 0.8205 | -0.0001 |
+| 60 | 64 | 1071 | 273 | **3.92x** | 0.8195 | 0.8191 | -0.0004 |
+| 100| 96 | 2101 | 529 | **3.97x** | 0.8175 | 0.8176 | +0.0001 |
+
+### 5.2 FP32 Baseline vs cuMF
+Comparison of the standard scalar FP32 baseline against cuMF.
+
+| F (cuMF) | K (FP32) | cuMF (ms/iter) | FP32 (ms/iter) | FP32 Speedup | cuMF RMSE | FP32 RMSE | Δ RMSE |
+|---|---|---|---|---|---|---|---|
+| 20 | 16 | 368 | 242 | **1.52x** | 0.8288 | 0.8311 | +0.0023 |
+| 30 | 32 | 500 | 718 | **0.70x** | 0.8241 | 0.8233 | -0.0008 |
+| 50 | 48 | 829 | 1587 | **0.52x** | 0.8206 | 0.8205 | -0.0001 |
+| 60 | 64 | 1071 | 3708 | **0.29x** | 0.8195 | 0.8191 | -0.0004 |
+| 100| 96 | 2101 | 7723 | **0.27x** | 0.8175 | 0.8176 | +0.0001 |
 
 *Reading guide:*
 * *test-RMSE is apples-to-apples: ALL rows use weighted-lambda ALS-WR.*
-* *cuMF rank F is the nearest multiple of 10 to K, so tiny test-RMSE differences across the K/F pair are partly the rank difference.*
-* *Speedup metrics are calculated using the `ms/iter` timing from the respective baseline.*
+* *cuMF rank F is the nearest multiple of 10 to K, so tiny test-RMSE differences across the K/F pair are partly due to the rank difference.*
 
 ---
 **Original Authors:**
