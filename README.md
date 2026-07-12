@@ -80,8 +80,3 @@ Comparison of the standard scalar FP32 baseline against cuMF.
 * *test-RMSE is apples-to-apples: ALL rows use weighted-lambda ALS-WR.*
 * *cuMF rank F is the nearest multiple of 10 to K, so tiny test-RMSE differences across the K/F pair are partly due to the rank difference.*
 
----
-**Original Authors:**
-- [Wei Tan](https://github.com/wei-tan)
-- [Shiyu Chang](https://github.com/code-terminator)
-- [Liangliang Cao](https://github.com/llcao)
