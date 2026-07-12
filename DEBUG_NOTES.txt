@@ -1,0 +1,264 @@
+════════════════════════════════════════════════════════════════════════════
+ DEBUG_NOTES.txt — comparing_baseline: all debugging / verification details
+ Last update: 2026-07-12 | GPU: 2x RTX 3060 12GB (sm_86) | CUDA 12.0
+ (This is the ONE details file for this folder. The full multi-month
+  engineering history lives in the parent working dir's FIXLOG.md.)
+════════════════════════════════════════════════════════════════════════════
+
+──────────────────────────────────────────────────────────────────────────────
+ 1. WHAT THIS FOLDER IS
+──────────────────────────────────────────────────────────────────────────────
+ Baseline-comparison workspace for the APR-BALS thesis. Three codes, one
+ frozen dataset split (.bin), one protocol (train-RMSE check every 5 iters,
+ converge when train delta < 0.001, max 50 iters):
+
+   main_experiment.cu   FP32 baseline + APR-BALS in ONE binary (the thesis
+                        speedup ratio). NOW DEFAULTS TO WEIGHTED LAMBDA.
+   only_scalar_fp32.cu  standalone scalar-FP32-only baseline (main_experiment
+                        minus every WMMA/FP16 launch) — for debugging the
+                        baseline leg in isolation. Weighted lambda default.
+   cumf_als-master/     cuMF_als (HPDC 2016, NVIDIA) CUDA-12 port — the
+                        external reference implementation. Always weighted.
+   justapr.cu           APR-only variant (lambda sweeps / profiling).
+                        Still PLAIN lambda — not converted.
+
+──────────────────────────────────────────────────────────────────────────────
+ 2. WEIGHTED-LAMBDA REGULARIZATION (added 2026-07-12)
+──────────────────────────────────────────────────────────────────────────────
+ What cumf_als does (als.cu, "weighted-lambda regularization", ALS-WR of
+ Zhou et al. 2008):     LHS diagonal += (entity's train nnz) * lambda
+ What our codes did before: LHS diagonal += lambda   ("plain")
+
+ Implementation (identical in main_experiment.cu and only_scalar_fp32.cu):
+   * compile switch  -DWEIGHTED_LAMBDA=1 (DEFAULT) / 0 = old plain behavior
+   * per-entity train nnz computed on host from the .bin CSR offsets
+     (train-only by construction; frequency-sorted order = batching order)
+   * tiny kernel add_weighted_lambda_diag runs on the compute stream AFTER
+     each batch's LHS accumulation (WMMA/giant/scalar all on stream sC, so
+     stream order covers all of them), BEFORE the solve handoff
+   * the Cholesky solvers then receive solver_lambda = 0 so nothing is
+     added twice (in plain mode they receive lambda as before)
+   * entities with 0 train ratings get plain lambda instead of nnz*lambda
+     (otherwise their all-zero LHS is singular -> NaN poisons the RMSE;
+     cumf_als does NOT guard this — see gotcha 6.3)
+   * BOTH legs of main_experiment (baseline AND APR) get the same treatment,
+     so the speedup/ΔRMSE comparison stays apples-to-apples.
+   * NOTE on the old invariant "lambda only inside the Cholesky solve":
+     weighted mode deliberately moves the diag update to a dedicated kernel
+     between accumulation and solve. It is still NOT inside the LHS/RHS
+     accumulation kernels (their unused lambda parameter stays unused).
+
+ Lambda tuning ranges (IMPORTANT — they differ per scheme):
+   weighted (ALS-WR): good ~0.02-0.06.  0.048 = cumf_als's Netflix tune.
+   plain:             tuned at 0.1 (all pre-07-12 thesis numbers).
+
+ Why this matters: with plain lambda=0.1 Netflix test RMSE OVERFITS at high
+ K (K=16: 0.8607 -> K=96: 1.19). With weighted lambda test RMSE IMPROVES
+ with rank, same as cuMF — so test-RMSE-vs-cuMF is now a fair comparison at
+ every rank.
+
+──────────────────────────────────────────────────────────────────────────────
+ 2b. INIT SCALE — CUMF_INIT switch (added 2026-07-12, second pass)
+──────────────────────────────────────────────────────────────────────────────
+ Discovery: released cuMF initializes theta ~ U(0, 0.2) and X = 0 (seed 0);
+ our codes initialized BOTH factors ~ U(0.1, 1.1) — ~5x larger scale. ALS
+ spends its first iterations shrinking the too-large factors, which is why
+ APR needed 25-30 ALS iterations where cuMF needed 15-20 under the identical
+ convergence protocol. This iteration gap — NOT kernel speed — was ~1/3 of
+ the "falling wall-speedup vs cuMF at high K".
+
+ Switch (both main_experiment.cu and only_scalar_fp32.cu):
+   -DCUMF_INIT=1  factors ~ U(0, 0.2)  (X's value is irrelevant anyway: the
+                  user-side solve overwrites X in the first half-iteration)
+   -DCUMF_INIT=0  DEFAULT — legacy U(0.1,1.1), preserved so every validated
+                  record (thesis tables, FIXLOG trajectories) stays exactly
+                  reproducible.
+ run_rmse_comparison.sh compiles with -DCUMF_INIT=1 by default (INIT=0 env
+ to override) — init parity is part of protocol parity for that comparison.
+ Note main_experiment's internal baseline-vs-APR comparison is unaffected by
+ the choice (both legs share the same h_X_init/h_Y_init).
+
+ Measured effect (netflix, lambda=0.048 weighted, GPU1 3060):
+   K=64: 30 -> 20 iters | APR wall 8.19 -> 5.46 s | test 0.820805 -> 0.819080
+         vs cuMF F=60 (21.39 s, 0.819547): wall speedup 2.61x -> 3.92x,
+         and APR's test RMSE is now BETTER than cuMF's at lower rank.
+   K=96: 30 -> 20 iters | APR wall 15.84 -> 10.83 s | test 0.819319 -> 0.817558
+         vs cuMF F=100 (42.02 s, 0.817501): wall speedup 2.65x -> 3.88x,
+         test RMSE now a tie (delta 0.00006) at rank 96 vs 100.
+   ml100k K=32: 40 -> 35 iters, test 0.982059 -> 0.980576.
+   Internal APR-vs-baseline numbers unchanged (K=64: 16.35x/13.62x, K=96:
+   16.40x/14.24x compute/wall; test delta <= 0.004%).
+   Identity checks: CUMF_INIT=0 reproduces the pre-switch runs digit-for-
+   digit; with CUMF_INIT=1 main_experiment's baseline leg == only_scalar_fp32
+   digit-for-digit (ml100k 0.464651/0.980576 @35).
+
+──────────────────────────────────────────────────────────────────────────────
+ 3. VERIFICATION RECORD (2026-07-12, GPU1 RTX 3060, CUDA 12.0)
+──────────────────────────────────────────────────────────────────────────────
+ 3.1 Compile matrix: main_experiment.cu and only_scalar_fp32.cu at every
+     supported K {16,32,48,64,96}, plus main K=32 with -DWEIGHTED_LAMBDA=0:
+     11/11 clean (zero errors/warnings), sm_86.
+
+ 3.2 Cross-code identity (weighted, lambda=0.05, ml100k ratings100.bin):
+     main_experiment baseline leg == only_scalar_fp32, DIGIT-FOR-DIGIT:
+     train 0.465527 / test 0.982059, both converged iter 40 (delta 0.000762).
+     ml100k has 27 empty items -> "empty entities" guard exercised: OK.
+
+ 3.3 Cross-code identity (weighted, lambda=0.048, netflix_ratings.bin, K=32):
+     main_experiment baseline leg == only_scalar_fp32, DIGIT-FOR-DIGIT at
+     every check: train 0.753650 / test 0.825325, converged iter 25.
+
+ 3.4 Netflix weighted vs cuMF (same split, same lambda=0.048):
+       K=32 base 0.825325 | APR 0.825296  vs cuMF F=30 0.824093
+       K=64 base 0.820837 | APR 0.820805  vs cuMF F=60 0.819547
+     -> within ~0.0013 of cuMF at nearest rank (part of that is rank 32/30,
+        64/60 difference + CG-vs-Cholesky + init). High-K overfitting GONE:
+        test RMSE now falls with rank, matching cuMF's behavior.
+
+ 3.5 APR-vs-baseline deltas and speedups unchanged by weighted lambda:
+       K=32: test Δ 0.0036%, speedup 9.27x compute / 7.44x wall (25 iters)
+       K=64: test Δ 0.0039%, speedup 16.33x compute / 13.60x wall (30 iters)
+     (plain-lambda records: K=32 9.80x/7.75x @30 it, K=64 16.82x/13.93x
+      @40 it — differences are iteration-count + run noise, not regression.)
+
+ 3.6 Plain-lambda regression check (-DWEIGHTED_LAMBDA=0, netflix K=32,
+     lambda=0.1) vs official Jul-6 record ("final results/netflix_gpu.txt"):
+     baseline trajectory matches DIGIT-FOR-DIGIT at every check (0.719562 /
+     0.929162 ... 0.692241 / 0.927319, converged 30); APR within ±3e-6 =
+     the known atomicAdd run-to-run wobble; speedups 9.83x/7.77x vs record
+     9.80x/7.75x (noise). The old code path is bit-preserved.
+
+ 3.7 run_rmse_comparison.sh end-to-end smoke test (ml100k, K=16 + cuMF F=10):
+     all four table rows parse; cuMF prints test=nan on ml100k (expected —
+     gotcha 6.3); our codes handle the empty entities fine.
+
+──────────────────────────────────────────────────────────────────────────────
+ 4. CUMF_ALS PORT — WHAT WAS CHANGED AND ITS RESULTS (2026-07-12)
+──────────────────────────────────────────────────────────────────────────────
+ Port of the released HPDC-2016 code to CUDA 12 / sm_86. KERNELS UNTOUCHED;
+ host-side only:
+   * cusparseScsrmm2 (removed in CUDA 11) -> generic cusparseSpMM
+     (thetaT/XT registered as ROW-major dense views: same memory, same math)
+   * __shfl_down -> __shfl_down_sync; CG launched via the author's own
+     96-thread strided kernel (updateXWithCGKernel2) because blockDim=100
+     leaves a partial warp with undefined shuffles on sm_70+
+   * device buffers allocated/copied ONCE before the loop (original
+     re-malloc'd + re-copied CSR over PCIe every iteration) — this
+     STRENGTHENS the baseline, never weakens it
+   * fixed a released-code bug: test-RMSE grid was (nnz_test-1)/256,
+     silently dropping the last <256 test ratings; now rounds up
+   * new main.cpp reads our frozen .bin directly (same split as our codes)
+   * protocol matched to ours: RMSE %5, tol 0.001, max 50, same printing
+ All cuMF RMSEs were cross-validated with bench_eval_rmse.py (fp64): each
+ agrees to <= 6e-6.
+
+ cuMF Netflix results (GPU1, lambda=0.048 weighted, X_BATCH=1 THETA_BATCH=3):
+    F  | iters | wall s | ms/iter | Train RMSE | Test RMSE
+   20  |  15   |  5.44  |   363   |  0.771220  | 0.828840
+   30  |  20   |  9.93  |   496   |  0.753987  | 0.824093
+   50  |  20   | 16.47  |   824   |  0.734113  | 0.820556
+   60  |  20   | 21.35  |  1067   |  0.727628  | 0.819547
+  100  |  20   | 41.96  |  2098   |  0.711641  | 0.817497
+ Speed at nearest rank: APR-BALS is 4.1-7.0x faster per iteration than cuMF;
+ cuMF is ~3.5x faster than our own scalar FP32 baseline (strong reference).
+ (Full original logs/models retained in the parent dir's cumf_als-master.)
+
+ cuMF usage:
+   cd cumf_als-master && make main
+   ./main <dataset.bin> [lambda=0.048] [F=100] [X_BATCH=1] [THETA_BATCH=3]
+          [DEVICE=1] [MAX_ITERS=50] [TOL=0.001]
+   F must be a multiple of 10. Each run writes cumf_XT_f*.bin /
+   cumf_thetaT_f*.bin model dumps in its cwd (run_rmse_comparison.sh
+   deletes them after each run).
+
+──────────────────────────────────────────────────────────────────────────────
+ 5. DEBUG SWITCHES / DEBUG WORKFLOW
+──────────────────────────────────────────────────────────────────────────────
+ only_scalar_fp32.cu extra compile switches (all off by default):
+   -DDEBUG_SYNC     deviceSync + error check after each phase of every iter
+                    (catches async kernel faults at the source; DO NOT
+                    benchmark with this on)
+   -DITER_TIMING    per-iteration LHS+RHS / Cholesky ms per side
+   -DMAX_ITERS=n    iteration cap (use ~10 for quick sanity sweeps)
+   -DWEIGHTED_LAMBDA=0/1   plain / weighted (see section 2)
+   -DROW_SPLIT=n    override the scalar-kernel row split (default per K)
+
+ run_scalar_sweep.sh automatically saves ptxas -v output per K and extracts
+ the "bytes spill stores" of the RPT template that actually runs — the
+ classic scalar-baseline failure mode is a register-spill cliff at K>=48
+ (fixed by ROW_SPLIT; if spill on the RUNNING template is ever >64B again,
+ the FP32 baseline is crippled and every speedup number is fake).
+
+ Quick sanity loop for any kernel-level change:
+   1) compile K=32 + run ml100k (sub-second turnaround, exercises the
+      empty-entity guard)
+   2) run only_scalar_fp32 AND main_experiment on the same .bin/lambda —
+      the baseline leg must match the standalone DIGIT-FOR-DIGIT
+   3) -DWEIGHTED_LAMBDA=0 run must match the pre-07-12 official logs
+      digit-for-digit (baseline leg; APR wobbles ±few e-6 from atomicAdd)
+
+──────────────────────────────────────────────────────────────────────────────
+ 6. GOTCHAS (things that already bit us once)
+──────────────────────────────────────────────────────────────────────────────
+ 6.1 K is compile-time; only {16,32,48,64,96} are legal — enforced by a
+     #error guard in common.cuh (K=80 used to produce silently-wrong LHS).
+ 6.2 Weighted vs plain lambda VALUES are not interchangeable (section 2).
+     Comparing "weighted 0.1" vs "plain 0.1" is comparing two mis-tuned runs.
+ 6.3 cuMF has NO empty-entity guard: any dataset where some user/item has
+     zero TRAIN ratings gives test RMSE = nan (ml100k: 27 such items).
+     netflix_ratings.bin has none — cuMF is safe there. Our codes guard it.
+ 6.4 The RMSE check cadence (%5) is SEMANTICS, not cosmetics — the
+     convergence delta compares against the previous check, so changing the
+     cadence changes when every run converges and invalidates every wall
+     number. Do not touch it in any of the three codes.
+ 6.5 Syncthing (Windows<->Linux) drops exec bits: a synced prebuilt binary
+     shows -rw-r--r-- and "make" says 'up to date' but the file cannot run.
+     run_rmse_comparison.sh chmod +x's cumf's main; for anything else:
+     chmod +x or make clean first.
+ 6.6 GPU selection: our binaries pick the device via CUDA_VISIBLE_DEVICES;
+     cuMF's main additionally takes a device argument (use 0 when
+     CUDA_VISIBLE_DEVICES exposes a single GPU). GPU0 usually drives the
+     display here — benchmark on GPU1.
+ 6.7 justapr.cu is still plain-lambda. If you sweep lambda with it for the
+     weighted operating point, wire WEIGHTED_LAMBDA in first (copy the
+     ~30 lines from only_scalar_fp32.cu) or use only_scalar_fp32.
+ 6.8 APR trajectories wobble ±1 in the 6th decimal between runs of the SAME
+     binary (LHS atomicAdd order). Baseline trajectories are exactly
+     reproducible. Don't chase phantom 1e-6 "regressions".
+ 6.9 The two run_training legs share LHS buffers and the solver; timing rows
+     labeled "LHS+RHS" are EXPOSED time (phase span minus solve busy time)
+     when the 2-buffer pipeline is active — their GFlops/s overstate pure
+     kernel throughput; totals/speedups remain exact.
+
+──────────────────────────────────────────────────────────────────────────────
+ 7. FILE MAP (after the 2026-07-12 cleanup)
+──────────────────────────────────────────────────────────────────────────────
+ README.md               repo-facing doc: what/why/build/run
+ DEBUG_NOTES.txt         this file — the only place for debug details
+ BENCHMARKING.md         evaluation methodology (paper structure)
+ preprocess.cpp          CSV -> frozen .bin (split + CSR baked in)
+ common.cuh              constants, K compile guard
+ data_utils.cuh          BALS tiled/segmented format build
+ fused_kernels.cuh       scalar FP32 kernel + RMSE kernel
+ wmma_kernels.cuh        FP16 WMMA dense/giant kernels
+ cholesky_kernels.cuh    batched/packed/tiled Cholesky solvers
+ main_experiment.cu      baseline + APR, weighted-lambda default
+ only_scalar_fp32.cu     standalone scalar FP32 baseline, weighted default
+ justapr.cu              APR-only (plain lambda — see 6.7)
+ baseline_als_gpu.py     PyTorch GPU ALS external baseline (plain lambda)
+ bench_eval_rmse.py      fp64 scorer for any P,Q on the frozen split
+ run_rmse_comparison.sh  ONE-SHOT: our codes vs cuMF, one table (section 4)
+ run_scalar_sweep.sh     K sweep of only_scalar_fp32 with spill check
+ run_final.sh            full GT+K sweep pipeline (WEIGHTED/LAMBDA knobs)
+ run_pillar2.sh          PyTorch-vs-APR table (pinned to plain lambda)
+ cumf_als-master/        cuMF port sources + Makefile + LICENSE + README
+ results/                ALL_SUMMARY.txt (official plain-lambda APR sweep,
+                         2026-07-06) + run_rmse_comparison.sh outputs
+
+ Deleted in the cleanup (all reproducible or preserved in the parent dir):
+ FIXLOG.md (parent keeps full history), README.mdgit (git boilerplate),
+ setup_cumf.sh (obsolete, wrong args — replaced by run_rmse_comparison.sh),
+ cumf .o/.log/model-bin files, cumf_als-master extras (data/, hugewiki/,
+ images/, tensorflow/, nvprof helper scripts), CUMF_RESULTS_SUMMARY.txt
+ (folded into section 4; original kept in parent dir's cumf_als-master).
+════════════════════════════════════════════════════════════════════════════

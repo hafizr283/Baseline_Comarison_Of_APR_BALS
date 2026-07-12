@@ -1,0 +1,58 @@
+════════════════════════════════════════════════════════════════════════
+ RMSE COMPARISON on identical frozen split: /home/pc/Desktop/2007080/netflix_ratings.bin
+ GPU=1 arch=sm_86 | lambda=0.048 (weighted ALS-WR everywhere) | CUMF_INIT=1
+ K: 16 32 48 64 96 | cuMF F: 20 30 50 60 100 | protocol: RMSE %5, tol 0.001, max 50
+ Started: Sun Jul 12 10:58:27 PM +06 2026
+════════════════════════════════════════════════════════════════════════
+  K=16 main_experiment ✓  APR test 0.831057 (20 it, 1.068s) | base test 0.831081 (20 it, 4.846s)
+  K=16 only_scalar_fp32 ✓  test 0.831081 (20 it, 4.834s)
+  K=32 main_experiment ✓  APR test 0.823282 (20 it, 1.935s) | base test 0.823308 (20 it, 14.363s)
+  K=32 only_scalar_fp32 ✓  test 0.823308 (20 it, 14.367s)
+  K=48 main_experiment ✓  APR test 0.820479 (20 it, 3.044s) | base test 0.820510 (20 it, 31.733s)
+  K=48 only_scalar_fp32 ✓  test 0.820510 (20 it, 31.759s)
+  K=64 main_experiment ✓  APR test 0.819080 (20 it, 5.457s) | base test 0.819113 (20 it, 74.168s)
+  K=64 only_scalar_fp32 ✓  test 0.819113 (20 it, 74.204s)
+  K=96 main_experiment ✓  APR test 0.817558 (20 it, 10.586s) | base test 0.817593 (20 it, 154.463s)
+  K=96 only_scalar_fp32 ✓  test 0.817593 (20 it, 154.502s)
+  F=20 cuMF ✓  test 0.828840 (15 it, 5.514s)
+  F=30 cuMF ✓  test 0.824093 (20 it, 10.008s)
+  F=50 cuMF ✓  test 0.820556 (20 it, 16.577s)
+  F=60 cuMF ✓  test 0.819547 (20 it, 21.417s)
+  F=100 cuMF ✓  test 0.817499 (20 it, 42.023s)
+
+════════════════════════════════════════════════════════════════════════
+ GRAND TABLE — identical split, identical protocol, lambda=0.048 weighted
+════════════════════════════════════════════════════════════════════════
+| rank  | code                        | iters | wall s   | ms/iter  | train RMSE | test RMSE |
+|-------|-----------------------------|-------|----------|----------|------------|-----------|
+| K=16  | APR-BALS mixed (weighted-l) | 20    | 1.068    | 53       | 0.782323   | 0.831057  |
+| K=16  | FP32 baseline (main_exp)    | 20    | 4.846    | 242      | 0.782356   | 0.831081  |
+| K=16  | FP32 scalar (standalone)    | 20    | 4.834    | 242      | 0.782356   | 0.831081  |
+| F=20  | cuMF-ALS (HPDC16, FP32+CG)  | 15    | 5.514    | 368      | 0.771220   | 0.828840  |
+| K=32  | APR-BALS mixed (weighted-l) | 20    | 1.935    | 97       | 0.752649   | 0.823282  |
+| K=32  | FP32 baseline (main_exp)    | 20    | 14.363   | 718      | 0.752687   | 0.823308  |
+| K=32  | FP32 scalar (standalone)    | 20    | 14.367   | 718      | 0.752687   | 0.823308  |
+| F=30  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 10.008   | 500      | 0.753987   | 0.824093  |
+| K=48  | APR-BALS mixed (weighted-l) | 20    | 3.044    | 152      | 0.736522   | 0.820479  |
+| K=48  | FP32 baseline (main_exp)    | 20    | 31.733   | 1587     | 0.736567   | 0.820510  |
+| K=48  | FP32 scalar (standalone)    | 20    | 31.759   | 1588     | 0.736567   | 0.820510  |
+| F=50  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 16.577   | 829      | 0.734113   | 0.820556  |
+| K=64  | APR-BALS mixed (weighted-l) | 20    | 5.457    | 273      | 0.726029   | 0.819080  |
+| K=64  | FP32 baseline (main_exp)    | 20    | 74.168   | 3708     | 0.726076   | 0.819113  |
+| K=64  | FP32 scalar (standalone)    | 20    | 74.204   | 3710     | 0.726076   | 0.819113  |
+| F=60  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 21.417   | 1071     | 0.727628   | 0.819547  |
+| K=96  | APR-BALS mixed (weighted-l) | 20    | 10.586   | 529      | 0.712923   | 0.817558  |
+| K=96  | FP32 baseline (main_exp)    | 20    | 154.463  | 7723     | 0.712971   | 0.817593  |
+| K=96  | FP32 scalar (standalone)    | 20    | 154.502  | 7725     | 0.712971   | 0.817593  |
+| F=100 | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 42.023   | 2101     | 0.711658   | 0.817499  |
+
+Reading guide:
+ * test-RMSE is now apples-to-apples: ALL rows use weighted-lambda ALS-WR.
+ * within a rank group: APR-BALS vs FP32 rows = the precision claim;
+   APR-BALS vs cuMF ms/iter = the external-baseline speed claim.
+ * cuMF rank F is the nearest multiple of 10 to K, so tiny test-RMSE
+   differences across the K/F pair are partly the rank difference.
+
+Finished : Sun Jul 12 11:13:32 PM +06 2026
+Summary  : results/RMSE_COMPARISON_20260712_225827.txt
+Full logs: results/logs_20260712_225827/
