@@ -1,5 +1,7 @@
 # Modified cuMF for Baseline Comparison
 
+> **Note:** This repository is the extension repository of [Accelerating-ALS-Matrix-Factorization-on-GPUs-via-Mixed-Precision-Tensor-Cores](https://github.com/hafizr283/Accelerating-ALS-Matrix-Factorization-on-GPUs-via-Mixed-Precision-Tensor-Cores) for comparing baseline.
+
 This folder contains a modified version of [cuMF](https://github.com/wei-tan/cuMF) (CUDA-Accelerated ALS), adapted specifically to integrate with our baseline comparison framework.
 
 The original cuMF codebase has been modified to:
