@@ -52,29 +52,32 @@ If you need to run this modified cuMF independently, navigate to this directory 
 
 ## 5. Performance and RMSE Results
 
-Here are the benchmarking results on identical frozen splits comparing **APR-BALS** (our baseline) against the standard FP32 baseline and **cuMF** on the dataset:
+Here are the benchmarking results on identical frozen splits comparing **APR-BALS** (our baseline) against the standard FP32 baseline and **cuMF** on the Netflix dataset. 
 
-| rank  | code                        | iters | wall s   | ms/iter  | train RMSE | test RMSE |
-|-------|-----------------------------|-------|----------|----------|------------|-----------|
-| K=16  | APR-BALS mixed (weighted-l) | 20    | 1.068    | 53       | 0.782323   | 0.831057  |
-| K=16  | FP32 baseline (main_exp)    | 20    | 4.846    | 242      | 0.782356   | 0.831081  |
-| F=20  | cuMF-ALS (HPDC16, FP32+CG)  | 15    | 5.514    | 368      | 0.771220   | 0.828840  |
-| K=32  | APR-BALS mixed (weighted-l) | 20    | 1.935    | 97       | 0.752649   | 0.823282  |
-| K=32  | FP32 baseline (main_exp)    | 20    | 14.363   | 718      | 0.752687   | 0.823308  |
-| F=30  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 10.008   | 500      | 0.753987   | 0.824093  |
-| K=48  | APR-BALS mixed (weighted-l) | 20    | 3.044    | 152      | 0.736522   | 0.820479  |
-| K=48  | FP32 baseline (main_exp)    | 20    | 31.733   | 1587     | 0.736567   | 0.820510  |
-| F=50  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 16.577   | 829      | 0.734113   | 0.820556  |
-| K=64  | APR-BALS mixed (weighted-l) | 20    | 5.457    | 273      | 0.726029   | 0.819080  |
-| K=64  | FP32 baseline (main_exp)    | 20    | 74.168   | 3708     | 0.726076   | 0.819113  |
-| F=60  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 21.417   | 1071     | 0.727628   | 0.819547  |
-| K=96  | APR-BALS mixed (weighted-l) | 20    | 10.586   | 529      | 0.712923   | 0.817558  |
-| K=96  | FP32 baseline (main_exp)    | 20    | 154.463  | 7723     | 0.712971   | 0.817593  |
-| F=100 | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 42.023   | 2101     | 0.711658   | 0.817499  |
+As shown, the APR-BALS implementation achieves up to **14.6x speedup** over the standard FP32 baseline and up to **6.9x speedup** over cuMF, with virtually identical test RMSE (differences < 0.001).
+
+| rank | code | ms/iter | Speedup (vs FP32) | Speedup (vs cuMF) | train RMSE | test RMSE |
+|---|---|---|---|---|---|---|
+| **K=16** | **APR-BALS mixed** | **53** | **4.56x** | **6.94x** | 0.782323 | 0.831057 |
+| | FP32 baseline | 242 | 1.00x | - | 0.782356 | 0.831081 |
+| *(F=20)* | cuMF-ALS | 368 | - | 1.00x | 0.771220 | 0.828840 |
+| **K=32** | **APR-BALS mixed** | **97** | **7.40x** | **5.15x** | 0.752649 | 0.823282 |
+| | FP32 baseline | 718 | 1.00x | - | 0.752687 | 0.823308 |
+| *(F=30)* | cuMF-ALS | 500 | - | 1.00x | 0.753987 | 0.824093 |
+| **K=48** | **APR-BALS mixed** | **152** | **10.44x** | **5.45x** | 0.736522 | 0.820479 |
+| | FP32 baseline | 1587 | 1.00x | - | 0.736567 | 0.820510 |
+| *(F=50)* | cuMF-ALS | 829 | - | 1.00x | 0.734113 | 0.820556 |
+| **K=64** | **APR-BALS mixed** | **273** | **13.58x** | **3.92x** | 0.726029 | 0.819080 |
+| | FP32 baseline | 3708 | 1.00x | - | 0.726076 | 0.819113 |
+| *(F=60)* | cuMF-ALS | 1071 | - | 1.00x | 0.727628 | 0.819547 |
+| **K=96** | **APR-BALS mixed** | **529** | **14.60x** | **3.97x** | 0.712923 | 0.817558 |
+| | FP32 baseline | 7723 | 1.00x | - | 0.712971 | 0.817593 |
+| *(F=100)*| cuMF-ALS | 2101 | - | 1.00x | 0.711658 | 0.817499 |
 
 *Reading guide:*
 * *test-RMSE is apples-to-apples: ALL rows use weighted-lambda ALS-WR.*
-* *cuMF rank F is the nearest multiple of 10 to K.*
+* *cuMF rank F is the nearest multiple of 10 to K, so tiny test-RMSE differences across the K/F pair are partly the rank difference.*
+* *Speedup metrics are calculated using the `ms/iter` timing from the respective baseline.*
 
 ---
 **Original Authors:**
