@@ -1,0 +1,115 @@
+════════════════════════════════════════════════════════════════════════
+ justapr (APR-BALS, ship recipe) vs cuMF-ALS — GPU=0 arch=sm_75 lambda=0.048
+ datasets: ratings10 ratings ratings32 netflix_ratings ratings100
+ K/F pairs: 16 32 48 64 96 / 20 30 50 60 100 | protocol: RMSE %5, tol 0.001, max 50
+ Started: Tue Jul 21 09:22:53 PM UTC 2026
+════════════════════════════════════════════════════════════════════════
+
+── dataset: ratings10  (/content/ratings10.bin) ──
+  K=16 justapr ✓  test 0.785833 (15 it, 0.176s)
+  K=32 justapr ✓  test 0.781819 (15 it, 0.318s)
+  K=48 justapr ✓  test 0.780860 (15 it, 0.444s)
+  K=64 justapr ✓  test 0.780287 (15 it, 0.763s)
+  K=96 justapr ✓  test 0.779203 (15 it, 1.255s)
+  F=20 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings10_cumf_f20.txt
+  F=30 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings10_cumf_f30.txt
+  F=50 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings10_cumf_f50.txt
+  F=60 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings10_cumf_f60.txt
+  F=100 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings10_cumf_f100.txt
+
+  table (ratings10):
+  | rank  | code                        | iters | wall s   | ms/iter  | train RMSE | test RMSE |
+  |-------|-----------------------------|-------|----------|----------|------------|-----------|
+  | K=16  | justapr APR-BALS (ship)     | 15    | 0.176    | 12       | 0.702575   | 0.785833  |
+  | K=32  | justapr APR-BALS (ship)     | 15    | 0.318    | 21       | 0.657581   | 0.781819  |
+  | K=48  | justapr APR-BALS (ship)     | 15    | 0.444    | 30       | 0.631045   | 0.780860  |
+  | K=64  | justapr APR-BALS (ship)     | 15    | 0.763    | 51       | 0.612927   | 0.780287  |
+  | K=96  | justapr APR-BALS (ship)     | 15    | 1.255    | 84       | 0.589725   | 0.779203  |
+
+── dataset: ratings  (/content/ratings.bin) ──
+  K=16 justapr ✓  test 0.777555 (15 it, 0.332s)
+  K=32 justapr ✓  test 0.771570 (15 it, 0.565s)
+  K=48 justapr ✓  test 0.770044 (15 it, 0.861s)
+  K=64 justapr ✓  test 0.769073 (15 it, 1.520s)
+  K=96 justapr ✓  test 0.768037 (15 it, 2.761s)
+  F=20 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings_cumf_f20.txt
+  F=30 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings_cumf_f30.txt
+  F=50 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings_cumf_f50.txt
+  F=60 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings_cumf_f60.txt
+  F=100 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings_cumf_f100.txt
+
+  table (ratings):
+  | rank  | code                        | iters | wall s   | ms/iter  | train RMSE | test RMSE |
+  |-------|-----------------------------|-------|----------|----------|------------|-----------|
+  | K=16  | justapr APR-BALS (ship)     | 15    | 0.332    | 22       | 0.697886   | 0.777555  |
+  | K=32  | justapr APR-BALS (ship)     | 15    | 0.565    | 38       | 0.656754   | 0.771570  |
+  | K=48  | justapr APR-BALS (ship)     | 15    | 0.861    | 57       | 0.633660   | 0.770044  |
+  | K=64  | justapr APR-BALS (ship)     | 15    | 1.520    | 101      | 0.618083   | 0.769073  |
+  | K=96  | justapr APR-BALS (ship)     | 15    | 2.761    | 184      | 0.598602   | 0.768037  |
+
+── dataset: ratings32  (/content/ratings32.bin) ──
+  K=16 justapr ✓  test 0.770734 (15 it, 0.560s)
+  K=32 justapr ✓  test 0.762362 (15 it, 0.920s)
+  K=48 justapr ✓  test 0.759637 (15 it, 1.522s)
+  K=64 justapr ✓  test 0.758579 (15 it, 2.717s)
+  K=96 justapr ✓  test 0.757444 (15 it, 5.630s)
+  F=20 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings32_cumf_f20.txt
+  F=30 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings32_cumf_f30.txt
+  F=50 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings32_cumf_f50.txt
+  F=60 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings32_cumf_f60.txt
+  F=100 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings32_cumf_f100.txt
+
+  table (ratings32):
+  | rank  | code                        | iters | wall s   | ms/iter  | train RMSE | test RMSE |
+  |-------|-----------------------------|-------|----------|----------|------------|-----------|
+  | K=16  | justapr APR-BALS (ship)     | 15    | 0.560    | 37       | 0.693695   | 0.770734  |
+  | K=32  | justapr APR-BALS (ship)     | 15    | 0.920    | 61       | 0.655280   | 0.762362  |
+  | K=48  | justapr APR-BALS (ship)     | 15    | 1.522    | 101      | 0.634431   | 0.759637  |
+  | K=64  | justapr APR-BALS (ship)     | 15    | 2.717    | 181      | 0.620986   | 0.758579  |
+  | K=96  | justapr APR-BALS (ship)     | 15    | 5.630    | 375      | 0.604324   | 0.757444  |
+
+── dataset: netflix_ratings  (/content/netflix_ratings.bin) ──
+  K=16 justapr ✓  test 0.831099 (15 it, 1.407s)
+  K=32 justapr ✓  test 0.823113 (15 it, 2.221s)
+  K=48 justapr ✓  test 0.820142 (15 it, 3.388s)
+  K=64 justapr ✓  test 0.818655 (15 it, 5.630s)
+  K=96 justapr ✓  test 0.817145 (15 it, 9.479s)
+  F=20 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/netflix_ratings_cumf_f20.txt
+  F=30 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/netflix_ratings_cumf_f30.txt
+  F=50 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/netflix_ratings_cumf_f50.txt
+  F=60 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/netflix_ratings_cumf_f60.txt
+  F=100 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/netflix_ratings_cumf_f100.txt
+
+  table (netflix_ratings):
+  | rank  | code                        | iters | wall s   | ms/iter  | train RMSE | test RMSE |
+  |-------|-----------------------------|-------|----------|----------|------------|-----------|
+  | K=16  | justapr APR-BALS (ship)     | 15    | 1.407    | 94       | 0.781615   | 0.831099  |
+  | K=32  | justapr APR-BALS (ship)     | 15    | 2.221    | 148      | 0.751737   | 0.823113  |
+  | K=48  | justapr APR-BALS (ship)     | 15    | 3.388    | 226      | 0.735477   | 0.820142  |
+  | K=64  | justapr APR-BALS (ship)     | 15    | 5.630    | 375      | 0.724902   | 0.818655  |
+  | K=96  | justapr APR-BALS (ship)     | 15    | 9.479    | 632      | 0.711741   | 0.817145  |
+
+── dataset: ratings100  (/content/ratings100.bin) ──
+  K=16 justapr ✓  test 0.987516 (25 it, 0.009s)
+  K=32 justapr ✓  test 0.985804 (20 it, 0.009s)
+  K=48 justapr ✓  test 0.963842 (20 it, 0.014s)
+  K=64 justapr ✓  test 0.948713 (15 it, 0.019s)
+  K=96 justapr ✓  test 0.937251 (15 it, 0.035s)
+  F=20 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings100_cumf_f20.txt
+  F=30 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings100_cumf_f30.txt
+  F=50 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings100_cumf_f50.txt
+  F=60 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings100_cumf_f60.txt
+  F=100 cuMF ✗ RUN FAILED — see results/logs_justapr_vs_cumf_20260721_212253/ratings100_cumf_f100.txt
+
+  table (ratings100):
+  | rank  | code                        | iters | wall s   | ms/iter  | train RMSE | test RMSE |
+  |-------|-----------------------------|-------|----------|----------|------------|-----------|
+  | K=16  | justapr APR-BALS (ship)     | 25    | 0.009    | 0        | 0.593952   | 0.987516  |
+  | K=32  | justapr APR-BALS (ship)     | 20    | 0.009    | 0        | 0.456586   | 0.985804  |
+  | K=48  | justapr APR-BALS (ship)     | 20    | 0.014    | 1        | 0.392743   | 0.963842  |
+  | K=64  | justapr APR-BALS (ship)     | 15    | 0.019    | 1        | 0.360959   | 0.948713  |
+  | K=96  | justapr APR-BALS (ship)     | 15    | 0.035    | 2        | 0.339287   | 0.937251  |
+
+Finished : Tue Jul 21 09:30:25 PM UTC 2026
+Summary  : results/JUSTAPR_VS_CUMF_20260721_212253.txt
+Full logs: results/logs_justapr_vs_cumf_20260721_212253/

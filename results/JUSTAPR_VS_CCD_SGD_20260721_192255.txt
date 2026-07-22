@@ -1,0 +1,57 @@
+==============================================================================
+ justapr (APR-BALS) vs cuMF_CCD vs cuMF_SGD — frozen-split, BALS protocol
+ GPU=1 arch=sm_86  datasets: ['ml10m']
+ justapr K=[16, 32, 48, 64, 96] lambda=0.048 | CCD t=15 | SGD k=128 t-sweep=[10, 20, 30, 40]
+ Started: 2026-07-21 19:22:55.716101
+==============================================================================
+
+──────────────────────────────────────────────────────────────────────
+── dataset: ml10m  (/home/pc/Desktop/2007080/ratings10.bin) ──
+  justapr K=16  test 0.785833  wall 0.078s  compute 0.072s  (15 it)
+  justapr K=32  test 0.781819  wall 0.154s  compute 0.128s  (15 it)
+  justapr K=48  test 0.780860  wall 0.238s  compute 0.210s  (15 it)
+  justapr K=64  test 0.780288  wall 0.430s  compute 0.399s  (15 it)
+  justapr K=96  test 0.779204  wall 0.769s  compute 0.732s  (15 it)
+  cuMF_CCD K=16  test 0.789069  compute 0.350s  wall 0.623s  (15 it, l=0.05)
+  cuMF_CCD K=32  test 0.785213  compute 0.690s  wall 0.971s  (15 it, l=0.05)
+  cuMF_CCD K=48  test 0.783830  compute 1.024s  wall 1.319s  (15 it, l=0.05)
+  cuMF_CCD K=64  test 0.782559  compute 1.365s  wall 1.691s  (15 it, l=0.05)
+  cuMF_CCD K=96  test 0.781193  compute 2.052s  wall 2.435s  (15 it, l=0.05)
+  cuMF_SGD (k=128, workers=256, l=0.05, a=0.08, b=0.3):
+
+======================================================================
+ TABLE — ml10m
+======================================================================
+ method                   rank   iters  train s   test RMSE 
+ --------------------------------------------------------------
+ justapr APR-BALS         K=16   15     0.078     0.785833  
+ justapr APR-BALS         K=32   15     0.154     0.781819  
+ justapr APR-BALS         K=48   15     0.238     0.780860  
+ justapr APR-BALS         K=64   15     0.430     0.780288  
+ justapr APR-BALS         K=96   15     0.769     0.779204  
+ cuMF_CCD                 K=16   15     0.350     0.789069  
+ cuMF_CCD                 K=32   15     0.690     0.785213  
+ cuMF_CCD                 K=48   15     1.024     0.783830  
+ cuMF_CCD                 K=64   15     1.365     0.782559  
+ cuMF_CCD                 K=96   15     2.052     0.781193  
+ cuMF_SGD                 k=128  10     0.173     0.796200  
+ cuMF_SGD                 k=128  20     0.346     0.784000  
+ cuMF_SGD                 k=128  30     0.518     0.780500  
+ cuMF_SGD                 k=128  40     0.690     0.778600  
+
+======================================================================
+ SPEEDUPS — justapr over baselines (this machine, RTX 3060)
+======================================================================
+ cuMF_CCD: wall(CCD compute) / wall(justapr) at matched K, avg over K
+  ml10m     justapr 3.82x faster than cuMF_CCD   (BALS paper vs cuMF_CCD: 2.09x)
+
+ cuMF_SGD (k=128) vs justapr (K=96): wall-to-reach-justapr-RMSE + throughput
+  ml10m     justapr K=96: 0.7792 in 0.769s | SGD matches at t=40 in 0.690s (justapr 0.90x vs SGD-to-same-RMSE)
+
+  NOTE: BALS paper's headline 5.3x-over-cuMF_SGD is a GFlops (throughput) metric
+        at f=128, not wall-to-convergence. ALS does ~f/3x more FLOPs/iter than
+        SGD, so ALS wins big on throughput even when wall-time is competitive.
+
+Finished: 2026-07-21 19:23:58.612707
+Summary : /home/pc/Desktop/2007080/latent_factorr_experimen/comparing_baseline/results/JUSTAPR_VS_CCD_SGD_20260721_192255.txt
+Logs    : /home/pc/Desktop/2007080/latent_factorr_experimen/comparing_baseline/results/logs_ccd_sgd_20260721_192255/

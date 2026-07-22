@@ -1,0 +1,27 @@
+=== CODE VERSION: CUMF-ALS-HPDC16 [CUDA-12 port | generic SpMM | CG(96-thread) | frozen-split .bin loader | APR-style output] ===
+Loading binary preprocessed dataset: /content/ratings32.bin
+200948 users, 84432 items | train=25677530, test=6322674
+cuMF mapping: R = items x users (m=84432, n=200948) | F=30 | lambda=0.0480 (weighted ALS-WR) | X_BATCH=1 THETA_BATCH=3 | CG_ITER=6 | max_iters=50 tol=0.001 | device=0
+
+=== cuMF-ALS (HPDC16 baseline, FP32 + CG solver) ===
+Iter  5 | Train RMSE: 0.672135 | Test RMSE: nan
+Iter 10 | Train RMSE: 0.660345 | Test RMSE: nan
+Iter 15 | Train RMSE: 0.658728 | Test RMSE: nan
+Iter 20 | Train RMSE: 0.658346 | Test RMSE: nan
+Converged at iteration 20 (train delta=0.000382 < tol=0.001)
+
+=== Profiling: cuMF-ALS (HPDC16 baseline, FP32 + CG solver) (20 iters) ===
+User LHS+RHS: 1557.04 ms total | 77.85 ms/iter |  326.5 GFlops/s
+User CG solve: 303.53 ms total | 15.18 ms/iter
+Item LHS+RHS: 2257.07 ms total | 112.85 ms/iter |  225.3 GFlops/s
+Item CG solve: 106.01 ms total |  5.30 ms/iter
+RMSE:          205.53 ms total | 51.38 ms/call
+Total FLOPs: 1016.83 GFLOPs | Throughput: 229.6 GFlops/s (compute: 240.7)
+Training Complete in 4.429 seconds!
+
+=== cuMF-ALS final ===
+Train RMSE: 0.658346 | Test RMSE: nan | compute=4223.66 ms | wall=4429.25 ms
+Params: F=30, lambda=0.0480 (weighted ALS-WR: diag += nnz_u*lambda), CG_ITER=6, SCAN_BATCH=28, X_BATCH=1, THETA_BATCH=3
+Model saved: cumf_XT_f30.bin (items 84432x30), cumf_thetaT_f30.bin (users 200948x30)
+
+ALS Done.

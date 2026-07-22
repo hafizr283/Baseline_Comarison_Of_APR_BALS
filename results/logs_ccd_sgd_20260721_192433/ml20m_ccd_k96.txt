@@ -1,0 +1,30 @@
+k = 96
+iterinner = 1
+outeriter = 15
+tsw = 100000
+tsh = 100000
+lambda = 0.05
+Loading from binary file...
+starts!
+tileSize_H,W: 100000, 100000 k: 96 lambda:  0.050000
+time to merge R 1.473536
+time to merge Rt 1.531904
+iter 1 time for 1 feature: 8.522752 ms
+iter 1 time 0.287448 RMSE 0.860827
+iter 2 time 0.574780 RMSE 0.834255
+iter 3 time 0.861895 RMSE 0.801049
+iter 4 time 1.149427 RMSE 0.784377
+iter 5 time 1.435799 RMSE 0.778680
+iter 6 time 1.721542 RMSE 0.776028
+iter 7 time 2.008831 RMSE 0.774513
+iter 8 time 2.296167 RMSE 0.773531
+iter 9 time 2.583647 RMSE 0.772835
+iter 10 time 2.871222 RMSE 0.772315
+iter 11 time 3.159061 RMSE 0.771904
+iter 12 time 3.446708 RMSE 0.771576
+iter 13 time 3.734336 RMSE 0.771305
+iter 14 time 4.021998 RMSE 0.771078
+iter 15 time 4.309576 RMSE 0.770886
+
+Total seconds: 4.950 for F= 96
+

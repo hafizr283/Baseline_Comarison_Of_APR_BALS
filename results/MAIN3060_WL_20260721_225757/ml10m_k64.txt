@@ -1,0 +1,76 @@
+=== CODE VERSION: SYNC-2026-07-20 [CHOL-MP 16-bit tiled Cholesky + optional IR — UNVALIDATED ON GPU; CHOL_MP=0 path = 07-06 code] ===
+Tiled Cholesky precision: FP32 tiled (production)
+Regularization: WEIGHTED lambda (ALS-WR, cumf_als-style: diag += nnz_e*lambda)
+Init: cuMF-scale U(0,0.2) (CUMF_INIT=1)
+Loading binary preprocessed dataset: /home/pc/Desktop/2007080/ratings10.bin
+69878 users, 10677 items | train=8026731, test=1973323
+User: 114032 nonzero tiles out of 183456 (37.8% skipped)
+Item: 115052 nonzero tiles out of 182364 (36.9% skipped)
+APR-BALS Precision Tiers (User tiles): FP16 Tensor Core=66445 (36.2%), FP32 Scalar=117011 (63.8%)
+APR-BALS Precision Tiers (Item tiles): FP16 Tensor Core=66647 (36.5%), FP32 Scalar=115717 (63.5%)
+User density stats: min=0.000000 max=0.748047 avg=0.010682 nonzero=114032/183456
+  Nonzero percentiles: p25=0.000488 p50=0.001709 p75=0.008545 p90=0.038818 p99=0.276367
+Item density stats: min=0.000000 max=0.759521 avg=0.010746 nonzero=115052/182364
+  Nonzero percentiles: p25=0.000488 p50=0.001709 p75=0.008301 p90=0.037842 p99=0.281006
+
+=== NNZ per Precision Tier ===
+User-side: FP16=7934768 (98.9%)  FP32=91963 (1.1%)
+Item-side: FP16=7934226 (98.8%)  FP32=92505 (1.2%)
+Thesis signal: dense tiles (FP16 path) hold 98.9% of user-side train NNZ.
+If >40%: precision dispatch covers most compute -> strong thesis.
+If <20%: most compute in FP32 tiles -> thesis needs argument about dense-tile quality.
+Giant split: User giants=2280, Item giants=2636 (nnz >= 512, 4 warps/giant)
+Load balancing: User jobs=15222 (from 2184 tile-rows), Item jobs=14543 (from 334 tile-rows)
+Hybrid split: User dense=69856 entities (2183 tile-rows, 4 sparse jobs), Item dense=10176 entities (318 tile-rows, 62 sparse jobs)
+Weighted-lambda: empty entities (get plain lambda): users=0, items=30
+
+=== FP32 Baseline (BALS — all tiles FP32, WEIGHTED lambda like cumf_als) ===
+Iter  5 | Train RMSE: 0.632872 | Test RMSE: 0.789743
+Iter 10 | Train RMSE: 0.619866 | Test RMSE: 0.783095
+Iter 15 | Train RMSE: 0.616328 | Test RMSE: 0.781516
+Iter 20 | Train RMSE: 0.614843 | Test RMSE: 0.781010
+Iter 25 | Train RMSE: 0.614091 | Test RMSE: 0.780861
+Converged at iteration 25 (train delta=0.000752 < tol=0.001)
+
+=== Profiling: FP32 Baseline (BALS — all tiles FP32, WEIGHTED lambda like cumf_als) (25 iters) ===
+User LHS+RHS: 3848.65 ms total | 153.95 ms/iter |  223.6 GFlops/s
+User Cholesky: 314.57 ms total | 12.58 ms/iter
+Item LHS+RHS: 3888.83 ms total | 155.55 ms/iter |  221.3 GFlops/s
+Item Cholesky:  48.48 ms total |  1.94 ms/iter
+RMSE:           27.29 ms total |  5.46 ms/call
+(Cholesky overlaps next batch's LHS+RHS on a 2nd stream; LHS+RHS rows = EXPOSED time = phase span minus solve busy time, so their GFlops/s overstates pure kernel throughput. Totals/speedups remain exact.)
+Total FLOPs: 1720.93 GFLOPs | Throughput: 211.7 GFlops/s (compute: 212.4)
+Training Complete in 8.129 seconds!
+
+=== APR-BALS (Mixed Precision, WEIGHTED lambda like cumf_als) ===
+Iter  5 | Train RMSE: 0.632866 | Test RMSE: 0.789737
+Iter 10 | Train RMSE: 0.619859 | Test RMSE: 0.783089
+Iter 15 | Train RMSE: 0.616321 | Test RMSE: 0.781510
+Iter 20 | Train RMSE: 0.614835 | Test RMSE: 0.781005
+Iter 25 | Train RMSE: 0.614084 | Test RMSE: 0.780857
+Converged at iteration 25 (train delta=0.000752 < tol=0.001)
+
+=== Profiling: APR-BALS (Mixed Precision, WEIGHTED lambda like cumf_als) (25 iters) ===
+User LHS+RHS:  210.74 ms total |  8.43 ms/iter | 4083.1 GFlops/s
+User Cholesky: 313.91 ms total | 12.56 ms/iter
+Item LHS+RHS:  146.57 ms total |  5.86 ms/iter | 5870.7 GFlops/s
+Item Cholesky:  48.52 ms total |  1.94 ms/iter
+RMSE:           27.24 ms total |  5.45 ms/call
+(Cholesky overlaps next batch's LHS+RHS on a 2nd stream; LHS+RHS rows = EXPOSED time = phase span minus solve busy time, so their GFlops/s overstates pure kernel throughput. Totals/speedups remain exact.)
+Total FLOPs: 1720.93 GFLOPs | Throughput: 2303.9 GFlops/s (compute: 2391.0)
+Training Complete in 0.748 seconds!
+
+╔══════════════════════════════════════════════════════════════╗
+║         APR-BALS vs FP32 Baseline  (80/20 split)           ║
+╠══════════════════════════════════════════════════════════════╣
+║  Compute speedup:        11.25x                             ║
+║  Wall-time speedup:      10.87x                             ║
+╠══════════════════════════════════════════════════════════════╣
+║  Train RMSE  baseline:   0.614091                         ║
+║  Train RMSE  APR-BALS:   0.614084  delta=-0.000007          ║
+╠══════════════════════════════════════════════════════════════╣
+║  Test  RMSE  baseline:   0.780861                         ║
+║  Test  RMSE  APR-BALS:   0.780857  delta=-0.000005  (APR better)║
+╚══════════════════════════════════════════════════════════════╝
+Train delta=0.000007 (0.0012%)  Test delta=0.000005 (0.0006%)
+Params: K_DIM=64, lambda=0.0480 (weighted ALS-WR: diag += nnz_e*lambda), DENSE_NNZ_THRESH=4, WARPS_PER_BLOCK=4, XB=32, YB=256

@@ -1,0 +1,61 @@
+k          :128
+num_workers:512
+u_grid     :1
+v_grid     :1
+x_grid     :1
+y_grid     :1
+ux         :1
+vy         :1
+num_iters  :40
+gpu        :0
+lambda_p   :0.05000
+lambda_q   :0.05000
+lrate      :0.00000
+alpha      :0.0800
+beta       :0.3000
+tr_path    :/content/scratch/conv/netflix/sgd/train.bin
+va_path    :
+model_path :/tmp/aprccdsgd_33whvbot/netflix.model.t40
+read_problem called
+m:480189, n:17770, nnz:80570989
+time elapsed:6.59358900s
+shuffle problem ...
+time elapsed:0.31853600s
+
+
+
+grid problem ...
+swapping ...
+grid swap time:1.75297500s
+
+
+scale problem ...
+time elapsed:0.10613800s
+
+
+
+init model ...
+state_size:480256
+grid:0
+state_size:17920
+grid:0
+time elapsed:0.28294200s
+
+
+
+calling sgd_update_k128() ...
+update_per_sec:322326760.993860
+SGD_TRAIN_SECONDS: 10.328617 for 40 iters (k=128)
+scale model ...
+time elapsed:0.02735000s
+
+
+
+save_model() is called
+saving feature p(480189)...
+saving feature q(17770)...
+time elapsed:0.23582000s
+
+training application finished...
+
+

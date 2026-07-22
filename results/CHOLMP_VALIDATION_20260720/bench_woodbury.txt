@@ -1,0 +1,17 @@
+GPU: NVIDIA GeForce RTX 3060 | K=96 n=60000 | weighted lambda0=0.048 | Y pool fp16
+
+   nnz |   tiled fp32 |   tiled fp16 |  woodbury (maxrel/meanrel)
+     8 |   29.955 ms  |   22.601 ms  |    3.739 ms  9.9e-03/4.5e-06  (vs fp32 8.01x, vs fp16 6.05x)
+       |  acc 2e-03/1e-06 | acc 5e+00/2e-03 |
+    16 |   29.678 ms  |   22.775 ms  |    7.591 ms  2.1e-02/3.3e-06  (vs fp32 3.91x, vs fp16 3.00x)
+       |  acc 1e-02/1e-06 | acc 4e+00/2e-03 |
+    24 |   29.671 ms  |   22.775 ms  |   12.841 ms  9.0e-03/2.2e-06  (vs fp32 2.31x, vs fp16 1.77x)
+       |  acc 4e-03/1e-06 | acc 2e+00/2e-03 |
+    32 |   29.669 ms  |   22.775 ms  |   21.087 ms  2.7e-01/1.4e-05  (vs fp32 1.41x, vs fp16 1.08x)
+       |  acc 1e-01/7e-06 | acc 1e+01/3e-03 |
+    48 |   29.673 ms  |   22.776 ms  |   89.768 ms  1.2e-03/1.1e-06  (vs fp32 0.33x, vs fp16 0.25x)
+       |  acc 2e-03/1e-06 | acc 2e+00/1e-03 |
+    64 |   29.675 ms  |   22.776 ms  |  148.870 ms  2.1e-03/1.2e-06  (vs fp32 0.20x, vs fp16 0.15x)
+       |  acc 2e-03/9e-07 | acc 2e+00/1e-03 |
+    76 |   29.671 ms  |   22.776 ms  |  204.194 ms  6.8e-03/1.6e-06  (vs fp32 0.15x, vs fp16 0.11x)
+       |  acc 8e-03/2e-06 | acc 4e+00/2e-03 |

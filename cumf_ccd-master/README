@@ -1,0 +1,45 @@
+
+## How to build  
+
+make clean && make
+
+## How to run  
+
+$./ccdp_gpu toy_example 
+(more examples below)
+
+##Input format
+
+The input should be in binary format (See toy_example directory
+for details). An example to create binaries can be found in https://github.com/cuMF/cumf_als/blob/master/data/ml10M/prepare_ml10M_data.py
+
+"meta_modified_all" has the name of the input files.
+
+Details:
+
+line 1 has #rows #cols
+line 2 has nnz in training dataset
+line 3 has nnz in test dataset
+line 4 to 12 has file names
+
+
+## Arguments
+
+    $ ./ccdp_gpu [options] [input file directoty containing meta_modified_all] 
+
+    options:
+
+        -k rank/feature : set the rank (default 10)
+        -l lambda : set the regularization parameter lambda (default 0.05)
+        -a tile size: set tile size for input matrix R (default 499999999)
+        -b tile size: set tile size for input matrix R Transpose (default 499999999)
+        -t max_iter: number of iterations (default 5)
+        -T max_iter: number of inner iterations (default 1)
+
+
+## Examples:
+To run Netflix:
+./ccdp_gpu -T 1 -a 100000 -b 100000 -l .058 -k 40 -t 10 ../Netflix 
+
+To run Yahoo Music:
+$./ccdp_gpu -T 1 -a 100000 -b 100000 -l 1.2 -k 40 -t 10 ../Yahoo_music 

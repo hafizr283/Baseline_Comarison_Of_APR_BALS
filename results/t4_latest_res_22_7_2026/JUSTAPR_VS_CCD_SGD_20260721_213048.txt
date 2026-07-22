@@ -1,0 +1,165 @@
+==============================================================================
+ justapr (APR-BALS) vs cuMF_CCD vs cuMF_SGD — frozen-split, BALS protocol
+ GPU=0 arch=sm_75  datasets: ['ml10m', 'ml20m', 'ml32m', 'netflix']
+ justapr K=[16, 32, 48, 64, 96] lambda=0.048 | CCD t=15 | SGD k=128 t-sweep=[10, 20, 30, 40]
+ Started: 2026-07-21 21:30:48.410120
+==============================================================================
+
+──────────────────────────────────────────────────────────────────────
+── dataset: ml10m  (/content/ratings10.bin) ──
+  justapr K=16  test 0.785833  wall 0.195s  compute 0.178s  (15 it)
+  justapr K=32  test 0.781819  wall 0.334s  compute 0.292s  (15 it)
+  justapr K=48  test 0.780860  wall 0.426s  compute 0.394s  (15 it)
+  justapr K=64  test 0.780288  wall 0.766s  compute 0.733s  (15 it)
+  justapr K=96  test 0.779205  wall 1.252s  compute 1.210s  (15 it)
+  cuMF_CCD K=16  test 0.788859  compute 0.361s  wall 0.649s  (15 it, l=0.05)
+  cuMF_CCD K=32  test 0.785006  compute 0.709s  wall 1.023s  (15 it, l=0.05)
+  cuMF_CCD K=48  test 0.783624  compute 1.073s  wall 1.423s  (15 it, l=0.05)
+  cuMF_CCD K=64  test 0.782342  compute 1.431s  wall 1.794s  (15 it, l=0.05)
+  cuMF_CCD K=96  test 0.780991  compute 2.390s  wall 2.875s  (15 it, l=0.05)
+  cuMF_SGD (k=128, workers=256, l=0.05, a=0.08, b=0.3):
+
+──────────────────────────────────────────────────────────────────────
+── dataset: ml20m  (/content/ratings.bin) ──
+  justapr K=16  test 0.777555  wall 0.323s  compute 0.302s  (15 it)
+  justapr K=32  test 0.771570  wall 0.542s  compute 0.475s  (15 it)
+  justapr K=48  test 0.770045  wall 0.834s  compute 0.766s  (15 it)
+  justapr K=64  test 0.769074  wall 1.500s  compute 1.431s  (15 it)
+  justapr K=96  test 0.768036  wall 2.712s  compute 2.626s  (15 it)
+  cuMF_CCD K=16  test 0.780235  compute 0.846s  wall 1.465s  (15 it, l=0.05)
+  cuMF_CCD K=32  test 0.774819  compute 1.507s  wall 1.967s  (15 it, l=0.05)
+  cuMF_CCD K=48  test 0.773137  compute 2.267s  wall 2.777s  (15 it, l=0.05)
+  cuMF_CCD K=64  test 0.771734  compute 3.128s  wall 3.847s  (15 it, l=0.05)
+  cuMF_CCD K=96  test 0.770304  compute 4.541s  wall 5.323s  (15 it, l=0.05)
+  cuMF_SGD (k=128, workers=384, l=0.05, a=0.08, b=0.3):
+
+──────────────────────────────────────────────────────────────────────
+── dataset: ml32m  (/content/ratings32.bin) ──
+  justapr K=16  test 0.770734  wall 0.566s  compute 0.530s  (15 it)
+  justapr K=32  test 0.762362  wall 0.898s  compute 0.795s  (15 it)
+  justapr K=48  test 0.759637  wall 1.510s  compute 1.395s  (15 it)
+  justapr K=64  test 0.758579  wall 2.655s  compute 2.536s  (15 it)
+  justapr K=96  test 0.757441  wall 5.509s  compute 5.367s  (15 it)
+  cuMF_CCD K=16  test 0.773780  compute 1.384s  wall 2.026s  (15 it, l=0.05)
+  cuMF_CCD K=32  test 0.766385  compute 2.783s  wall 3.607s  (15 it, l=0.05)
+  cuMF_CCD K=48  test 0.763649  compute 4.036s  wall 4.851s  (15 it, l=0.05)
+  cuMF_CCD K=64  test 0.762192  compute 5.464s  wall 6.500s  (15 it, l=0.05)
+  cuMF_CCD K=96  test 0.760939  compute 8.158s  wall 9.461s  (15 it, l=0.05)
+  cuMF_SGD (k=128, workers=512, l=0.05, a=0.08, b=0.3):
+
+──────────────────────────────────────────────────────────────────────
+── dataset: netflix  (/content/netflix_ratings.bin) ──
+  justapr K=16  test 0.831099  wall 1.376s  compute 1.232s  (15 it)
+  justapr K=32  test 0.823113  wall 2.135s  compute 1.790s  (15 it)
+  justapr K=48  test 0.820142  wall 3.298s  compute 2.868s  (15 it)
+  justapr K=64  test 0.818655  wall 5.482s  compute 5.013s  (15 it)
+  justapr K=96  test 0.817146  wall 9.315s  compute 8.694s  (15 it)
+  cuMF_CCD K=16  test 0.830784  compute 3.658s  wall 5.771s  (15 it, l=0.058)
+  cuMF_CCD K=32  test 0.824529  compute 7.180s  wall 12.128s  (15 it, l=0.058)
+  cuMF_CCD K=48  test 0.822390  compute 10.838s  wall 18.213s  (15 it, l=0.058)
+  cuMF_CCD K=64  test 0.821396  compute 14.504s  wall 24.004s  (15 it, l=0.058)
+  cuMF_CCD K=96  test 0.820351  compute 21.869s  wall 36.288s  (15 it, l=0.058)
+  cuMF_SGD (k=128, workers=512, l=0.05, a=0.08, b=0.3):
+
+======================================================================
+ TABLE — ml10m
+======================================================================
+ method                   rank   iters  train s   test RMSE 
+ --------------------------------------------------------------
+ justapr APR-BALS         K=16   15     0.195     0.785833  
+ justapr APR-BALS         K=32   15     0.334     0.781819  
+ justapr APR-BALS         K=48   15     0.426     0.780860  
+ justapr APR-BALS         K=64   15     0.766     0.780288  
+ justapr APR-BALS         K=96   15     1.252     0.779205  
+ cuMF_CCD                 K=16   15     0.361     0.788859  
+ cuMF_CCD                 K=32   15     0.709     0.785006  
+ cuMF_CCD                 K=48   15     1.073     0.783624  
+ cuMF_CCD                 K=64   15     1.431     0.782342  
+ cuMF_CCD                 K=96   15     2.390     0.780991  
+ cuMF_SGD                 k=128  10     0.241     0.796300  
+ cuMF_SGD                 k=128  20     0.585     0.784000  
+ cuMF_SGD                 k=128  30     0.796     0.780400  
+ cuMF_SGD                 k=128  40     1.030     0.778600  
+
+======================================================================
+ TABLE — ml20m
+======================================================================
+ method                   rank   iters  train s   test RMSE 
+ --------------------------------------------------------------
+ justapr APR-BALS         K=16   15     0.323     0.777555  
+ justapr APR-BALS         K=32   15     0.542     0.771570  
+ justapr APR-BALS         K=48   15     0.834     0.770045  
+ justapr APR-BALS         K=64   15     1.500     0.769074  
+ justapr APR-BALS         K=96   15     2.712     0.768036  
+ cuMF_CCD                 K=16   15     0.846     0.780235  
+ cuMF_CCD                 K=32   15     1.507     0.774819  
+ cuMF_CCD                 K=48   15     2.267     0.773137  
+ cuMF_CCD                 K=64   15     3.128     0.771734  
+ cuMF_CCD                 K=96   15     4.541     0.770304  
+ cuMF_SGD                 k=128  10     0.479     0.789000  
+ cuMF_SGD                 k=128  20     0.924     0.775900  
+ cuMF_SGD                 k=128  30     1.294     0.771900  
+ cuMF_SGD                 k=128  40     1.713     0.769800  
+
+======================================================================
+ TABLE — ml32m
+======================================================================
+ method                   rank   iters  train s   test RMSE 
+ --------------------------------------------------------------
+ justapr APR-BALS         K=16   15     0.566     0.770734  
+ justapr APR-BALS         K=32   15     0.898     0.762362  
+ justapr APR-BALS         K=48   15     1.510     0.759637  
+ justapr APR-BALS         K=64   15     2.655     0.758579  
+ justapr APR-BALS         K=96   15     5.509     0.757441  
+ cuMF_CCD                 K=16   15     1.384     0.773780  
+ cuMF_CCD                 K=32   15     2.783     0.766385  
+ cuMF_CCD                 K=48   15     4.036     0.763649  
+ cuMF_CCD                 K=64   15     5.464     0.762192  
+ cuMF_CCD                 K=96   15     8.158     0.760939  
+ cuMF_SGD                 k=128  10     0.680     0.784100  
+ cuMF_SGD                 k=128  20     1.304     0.768500  
+ cuMF_SGD                 k=128  30     1.923     0.763400  
+ cuMF_SGD                 k=128  40     2.502     0.760800  
+
+======================================================================
+ TABLE — netflix
+======================================================================
+ method                   rank   iters  train s   test RMSE 
+ --------------------------------------------------------------
+ justapr APR-BALS         K=16   15     1.376     0.831099  
+ justapr APR-BALS         K=32   15     2.135     0.823113  
+ justapr APR-BALS         K=48   15     3.298     0.820142  
+ justapr APR-BALS         K=64   15     5.482     0.818655  
+ justapr APR-BALS         K=96   15     9.315     0.817146  
+ cuMF_CCD                 K=16   15     3.658     0.830784  
+ cuMF_CCD                 K=32   15     7.180     0.824529  
+ cuMF_CCD                 K=48   15     10.838    0.822390  
+ cuMF_CCD                 K=64   15     14.504    0.821396  
+ cuMF_CCD                 K=96   15     21.869    0.820351  
+ cuMF_SGD                 k=128  10     2.644     0.841000  
+ cuMF_SGD                 k=128  20     5.202     0.828700  
+ cuMF_SGD                 k=128  30     7.794     0.824300  
+ cuMF_SGD                 k=128  40     10.329    0.822300  
+
+======================================================================
+ SPEEDUPS — justapr over baselines (this machine, RTX 3060)
+======================================================================
+ cuMF_CCD: wall(CCD compute) / wall(justapr) at matched K, avg over K
+  ml10m     justapr 2.05x faster than cuMF_CCD   (BALS paper vs cuMF_CCD: 2.09x)
+  ml20m     justapr 2.38x faster than cuMF_CCD   (BALS paper vs cuMF_CCD: 3.86x)
+  ml32m     justapr 2.35x faster than cuMF_CCD   (not in BALS paper)
+  netflix   justapr 2.86x faster than cuMF_CCD   (BALS paper vs cuMF_CCD: 3.22x)
+
+ cuMF_SGD (k=128) vs justapr (K=96): wall-to-reach-justapr-RMSE + throughput
+  ml10m     justapr K=96: 0.7792 in 1.252s | SGD matches at t=40 in 1.030s (justapr 0.82x vs SGD-to-same-RMSE)
+  ml20m     justapr K=96: 0.7680 in 2.712s | SGD best 0.7698 at t=40 in 1.713s (SGD never reaches justapr RMSE)
+  ml32m     justapr K=96: 0.7574 in 5.509s | SGD best 0.7608 at t=40 in 2.502s (SGD never reaches justapr RMSE)
+  netflix   justapr K=96: 0.8171 in 9.315s | SGD best 0.8223 at t=40 in 10.329s (SGD never reaches justapr RMSE)
+
+  NOTE: BALS paper's headline 5.3x-over-cuMF_SGD is a GFlops (throughput) metric
+        at f=128, not wall-to-convergence. ALS does ~f/3x more FLOPs/iter than
+        SGD, so ALS wins big on throughput even when wall-time is competitive.
+
+Finished: 2026-07-21 21:45:52.296009
+Summary : /content/results/JUSTAPR_VS_CCD_SGD_20260721_213048.txt
+Logs    : /content/results/logs_ccd_sgd_20260721_213048/

@@ -1,0 +1,43 @@
+GPU: NVIDIA GeForce RTX 3060 | n=60000 | CHOL_REFINE=0
+
+================ K = 32  (n = 60000 systems, lambda = 0.100, CHOL_REFINE=0) ================
+fp32 tiled (production)               3.832 ms   maxrel 2.09e-04  meanrel 1.78e-07
+fp16 tiles NTH=96                     3.650 ms   maxrel 1.26e+00  meanrel 8.17e-04  fails 0
+fp16 tiles NTH=128                    4.334 ms   maxrel 1.26e+00  meanrel 8.17e-04  fails 0
+fp16 tiles NTH=192                    6.421 ms   maxrel 1.26e+00  meanrel 8.17e-04  fails 0
+bf16 tiles NTH=96                     3.398 ms   maxrel 2.72e+00  meanrel 5.77e-03  fails 0
+bf16 tiles NTH=128                    3.998 ms   maxrel 2.72e+00  meanrel 5.77e-03  fails 0
+bf16 tiles NTH=192                    5.931 ms   maxrel 2.72e+00  meanrel 5.77e-03  fails 0
+stale-refine bf16 (exact-A)           1.705 ms   maxrel 1.97e-02  meanrel 3.85e-05  fails 0
+
+================ K = 48  (n = 60000 systems, lambda = 0.100, CHOL_REFINE=0) ================
+fp32 tiled (production)               5.898 ms   maxrel 4.89e-05  meanrel 1.49e-07
+fp16 tiles NTH=96                     5.546 ms   maxrel 1.51e-01  meanrel 4.80e-04  fails 0
+fp16 tiles NTH=128                    6.322 ms   maxrel 1.51e-01  meanrel 4.80e-04  fails 0
+fp16 tiles NTH=192                    9.024 ms   maxrel 1.51e-01  meanrel 4.80e-04  fails 0
+bf16 tiles NTH=96                     5.556 ms   maxrel 2.57e+00  meanrel 4.25e-03  fails 0
+bf16 tiles NTH=128                    6.353 ms   maxrel 2.57e+00  meanrel 4.25e-03  fails 0
+bf16 tiles NTH=192                    9.081 ms   maxrel 2.57e+00  meanrel 4.25e-03  fails 0
+stale-refine bf16 (exact-A)           2.565 ms   maxrel 6.45e-03  meanrel 2.33e-05  fails 0
+
+================ K = 64  (n = 60000 systems, lambda = 0.100, CHOL_REFINE=0) ================
+fp32 tiled (production)              10.599 ms   maxrel 4.25e-05  meanrel 1.43e-07
+fp16 tiles NTH=96                     8.641 ms   maxrel 3.55e-01  meanrel 6.10e-04  fails 0
+fp16 tiles NTH=128                    9.177 ms   maxrel 3.55e-01  meanrel 6.10e-04  fails 0
+fp16 tiles NTH=192                   12.767 ms   maxrel 3.55e-01  meanrel 6.10e-04  fails 0
+bf16 tiles NTH=96                     8.643 ms   maxrel 1.67e+00  meanrel 4.39e-03  fails 0
+bf16 tiles NTH=128                    9.189 ms   maxrel 1.67e+00  meanrel 4.39e-03  fails 0
+bf16 tiles NTH=192                   12.838 ms   maxrel 1.67e+00  meanrel 4.39e-03  fails 0
+stale-refine bf16 (exact-A)           4.683 ms   maxrel 1.04e-02  meanrel 2.88e-05  fails 0
+
+================ K = 96  (n = 60000 systems, lambda = 0.100, CHOL_REFINE=0) ================
+fp32 tiled (production)              29.251 ms   maxrel 1.16e-04  meanrel 1.46e-07
+fp16 tiles NTH=96                    21.920 ms   maxrel 1.64e-01  meanrel 5.62e-04  fails 0
+fp16 tiles NTH=128                   21.995 ms   maxrel 1.64e-01  meanrel 5.62e-04  fails 0
+fp16 tiles NTH=192                   23.550 ms   maxrel 1.64e-01  meanrel 5.62e-04  fails 0
+bf16 tiles NTH=96                    21.812 ms   maxrel 2.25e+00  meanrel 4.27e-03  fails 0
+bf16 tiles NTH=128                   21.884 ms   maxrel 2.25e+00  meanrel 4.27e-03  fails 0
+bf16 tiles NTH=192                   23.566 ms   maxrel 2.25e+00  meanrel 4.27e-03  fails 0
+stale-refine bf16 (exact-A)          11.533 ms   maxrel 9.46e-03  meanrel 2.30e-05  fails 0
+fp16 overflow probe scale=800        26.214 ms   fails 0 / 60000  (expect all: diag ~76800 > 65504)
+bf16 tiles scale=800                 21.884 ms   maxrel 1.22e-02  meanrel 3.24e-03  fails 0 (expect 0)

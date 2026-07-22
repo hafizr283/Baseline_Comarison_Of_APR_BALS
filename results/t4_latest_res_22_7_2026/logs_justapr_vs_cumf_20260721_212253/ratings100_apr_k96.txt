@@ -1,0 +1,45 @@
+=== CODE VERSION: SYNC-2026-07-20 [CHOL-MP 16-bit tiled Cholesky + optional IR + stale-L cache — UNVALIDATED ON GPU; CHOL_MP=0 path = 07-06 code] ===
+Tiled Cholesky precision: FP16 tiles, NO refinement (YOLO)
+Regularization: weighted-lambda ALS-WR (diag += nnz*lambda) | Init: cuMF-scale U(0,0.2)
+Loading binary preprocessed dataset: /content/ratings100.bin
+943 users, 1682 items | train=80367, test=19633
+[MOMENTUM] heavy-ball extrapolation ON, beta=0.300
+User: 372 nonzero tiles out of 420 (11.4% skipped)
+Item: 390 nonzero tiles out of 424 (8.0% skipped)
+APR-BALS Precision Tiers (User tiles): FP16 Tensor Core=329 (78.3%), FP32 Scalar=91 (21.7%)
+APR-BALS Precision Tiers (Item tiles): FP16 Tensor Core=338 (79.7%), FP32 Scalar=86 (20.3%)
+User density stats: min=0.000000 max=0.618164 avg=0.046716 nonzero=372/420
+  Nonzero percentiles: p25=0.002930 p50=0.012451 p75=0.055420 p90=0.157959 p99=0.474121
+Item density stats: min=0.000000 max=0.605957 avg=0.046276 nonzero=390/424
+  Nonzero percentiles: p25=0.002441 p50=0.010986 p75=0.048096 p90=0.151367 p99=0.499023
+
+=== NNZ per Precision Tier ===
+User-side: FP16=80272 (99.9%)  FP32=95 (0.1%)
+Item-side: FP16=80250 (99.9%)  FP32=117 (0.1%)
+Thesis signal: dense tiles (FP16 path) hold 99.9% of user-side train NNZ.
+If >40%: precision dispatch covers most compute -> strong thesis.
+If <20%: most compute in FP32 tiles -> thesis needs argument about dense-tile quality.
+Giant split: User giants=0, Item giants=0 (nnz >= 1024, 4 warps/giant)
+Load balancing: User jobs=60 (from 30 tile-rows), Item jobs=53 (from 53 tile-rows)
+Hybrid split: User dense=928 entities (29 tile-rows, 2 sparse jobs), Item dense=1344 entities (42 tile-rows, 11 sparse jobs)
+
+=== APR-BALS (Mixed Precision) ===
+Iter  5 | Train RMSE: 0.342847 | Test RMSE: 0.936715
+Iter 10 | Train RMSE: 0.338471 | Test RMSE: 0.934659
+Iter 15 | Train RMSE: 0.339288 | Test RMSE: 0.937249
+Converged at iteration 15 (train delta=0.000816 < tol=0.001)
+Final fp32-exact | Train RMSE: 0.339287 | Test RMSE: 0.937251
+
+=== Profiling: APR-BALS (Mixed Precision) (15 iters) ===
+User LHS+RHS:   11.77 ms total |  0.78 ms/iter |  973.1 GFlops/s
+User Cholesky:   0.03 ms total |  0.00 ms/iter
+Item LHS+RHS:   21.49 ms total |  1.43 ms/iter |  533.3 GFlops/s
+Item Cholesky:   0.03 ms total |  0.00 ms/iter
+CHOL_MP [FP16 tiles, NO refinement (YOLO)]: non-finite solves zeroed = 0 entity-iters
+RMSE:            1.33 ms total |  0.33 ms/call
+Total FLOPs: 22.91 GFLOPs | Throughput: 661.1 GFlops/s (compute: 687.6)
+Training Complete in 0.035 seconds!
+
+=== APR-BALS final ===
+Train RMSE: 0.339287 | Test RMSE: 0.937251 | compute=33.32 ms | wall=35.11 ms
+Params: K_DIM=96, lambda=0.05, DENSE_NNZ_THRESH=4, WARPS_PER_BLOCK=4, XB=32, YB=256

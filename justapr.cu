@@ -4,8 +4,67 @@
 #include "wmma_kernels.cuh"
 #include "cholesky_kernels.cuh"
 
+// Regularization mode — ported from main_experiment.cu (SYNC-2026-07-12) so
+// the CHOL_MP/CHOL_STALE experiments can run in the production regime: plain
+// λ·I at λ=0.1 gives κ(A) ~ ||A||/λ ~ 1e5+ on heavy Netflix entities, which
+// breaks a 16-bit factorization outright (measured 2026-07-20: all four mp
+// variants diverge in this binary with WEIGHTED_LAMBDA=0). Weighted-λ caps
+// κ at O(K/λ) for every entity. Default stays 0: every legacy justapr record
+// (plain λ trajectories) remains reproducible with no flags.
+#ifndef WEIGHTED_LAMBDA
+#define WEIGHTED_LAMBDA 0
+#endif
+#ifndef CUMF_INIT
+#define CUMF_INIT 0
+#endif
+#if WEIGHTED_LAMBDA
+// cumf_als parity (als.cu "weighted-lambda regularization"):
+//   tt[diag] += (end - start) * lambda   with (end-start) = entity's train nnz.
+// Runs on the compute stream after each batch's LHS accumulation; the solvers
+// then get λ=0 so nothing is added twice. nnz=0 entities fall back to plain λ.
+__global__ void add_weighted_lambda_diag(float* __restrict__ d_LHS_all,
+                                         const int* __restrict__ d_nnz,
+                                         int batch_start, int batch_n,
+                                         int K, float lambda) {
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (long long)batch_n * K) return;
+    int e = (int)(idx / K);
+    int d = (int)(idx % K);
+    int n = d_nnz[batch_start + e];
+    d_LHS_all[(long long)e * K * K + (long long)d * K + d] += lambda * (n > 0 ? n : 1);
+}
+#endif
+
+// ── Heavy-ball momentum / DIIS-style extrapolation of the factor sequence
+// (EXPERIMENT, SYNC-2026-07-21). ALS is a contractive fixed-point map near its
+// solution; extrapolating along the update direction lowers the effective
+// spectral radius and can reach the same fixed point in fewer sweeps. After a
+// factor is solved this iteration (X_raw), we set
+//     X_used = X_raw + beta*(X_raw - X_raw_prev)
+// and store X_raw into the prev buffer. At the fixed point X_raw==X_raw_prev so
+// the extrapolation term vanishes -> SAME converged factors (parity gate =
+// final fp32 RMSE). beta==0 on iter 0 (no valid prev) just seeds the prev
+// buffer. Guarded behind MOMENTUM: the default build is byte-identical.
+#ifndef MOMENTUM
+#define MOMENTUM 0
+#endif
+#if MOMENTUM
+__global__ void momentum_extrapolate(float* __restrict__ x, float* __restrict__ xprev,
+                                     long long n, float beta) {
+    long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float raw = x[i];
+    x[i]     = raw + beta * (raw - xprev[i]);
+    xprev[i] = raw;
+}
+#endif
+
 int main(int argc, char* argv[]) {
-    printf("=== CODE VERSION: SYNC-2026-07-06 [TILED-cholesky + float4 load map (bit-identical) + RMSE const-restrict] ===\n");
+    printf("=== CODE VERSION: SYNC-2026-07-20 [CHOL-MP 16-bit tiled Cholesky + optional IR + stale-L cache — UNVALIDATED ON GPU; CHOL_MP=0 path = 07-06 code] ===\n");
+    printf("Tiled Cholesky precision: %s%s\n", CHOL_MP_STR, CHOL_STALE ? " + stale-L cache" : "");
+    printf("Regularization: %s | Init: %s\n",
+           WEIGHTED_LAMBDA ? "weighted-lambda ALS-WR (diag += nnz*lambda)" : "plain lambda*I (legacy)",
+           CUMF_INIT ? "cuMF-scale U(0,0.2)" : "legacy U(0.1,1.1)");
     const char* csv_path = (argc > 1) ? argv[1]
         : "/content/drive/MyDrive/gpu programming/gpu_last_time/IncludingDataset/netflix_ratings.csv";
     vector<int> raw_users, raw_items, test_users_h, test_items_h;
@@ -49,6 +108,11 @@ int main(int argc, char* argv[]) {
 
     int K         = K_DIM;
     float lambda  = (argc > 2) ? atof(argv[2]) : 0.1f;
+    // Weighted-λ is FUSED into the solvers (07-21): every solver takes an
+    // optional per-entity nnz pointer and adds λ·nnz on its own diag pass —
+    // bit-identical to the retired add_weighted_lambda_diag pre-pass, which
+    // cost 27 ms/iter of pure RMW traffic at Netflix K=96. All solver call
+    // sites now pass `lambda` + `d_nnzw` (nullptr in plain mode).
     int max_iters = 50;
     float tol     = 0.001f;
     int max_ent   = max(num_users, num_items);
@@ -56,9 +120,29 @@ int main(int argc, char* argv[]) {
 
     srand(42);
     vector<float> h_X(num_users * K), h_Y(num_items * K);
+#if CUMF_INIT
+    // cuMF-scale init U(0,0.2) — same sequence as main_experiment.cu CUMF_INIT.
+    for (int i = 0; i < num_users * K; i++) h_X[i] = 0.2f * ((float)rand() / (float)RAND_MAX);
+    for (int i = 0; i < num_items * K; i++) h_Y[i] = 0.2f * ((float)rand() / (float)RAND_MAX);
+#else
     for (int i = 0; i < num_users * K; i++) h_X[i] = 0.1f + (rand() % 100) / 100.0f;
     for (int i = 0; i < num_items * K; i++) h_Y[i] = 0.1f + (rand() % 100) / 100.0f;
+#endif
     vector<float> h_X_init = h_X, h_Y_init = h_Y;
+
+#if WEIGHTED_LAMBDA
+    // Per-entity train nnz for weighted-λ (CSR offsets from the frozen .bin).
+    int *d_u_nnz, *d_i_nnz;
+    {
+        vector<int> h_u_nnz(num_users), h_i_nnz(num_items);
+        for (int u = 0; u < num_users; u++) h_u_nnz[u] = h_user_offsets[u + 1] - h_user_offsets[u];
+        for (int i = 0; i < num_items; i++) h_i_nnz[i] = h_item_offsets[i + 1] - h_item_offsets[i];
+        cudaMalloc(&d_u_nnz, sizeof(int) * num_users);
+        cudaMalloc(&d_i_nnz, sizeof(int) * num_items);
+        cudaMemcpy(d_u_nnz, h_u_nnz.data(), sizeof(int) * num_users, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_i_nnz, h_i_nnz.data(), sizeof(int) * num_items, cudaMemcpyHostToDevice);
+    }
+#endif
 
     float *d_X, *d_Y;
     cudaMalloc(&d_X,       sizeof(float) * num_users * K);
@@ -102,6 +186,17 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(d_X, h_X.data(), sizeof(float) * num_users * K, cudaMemcpyHostToDevice);
     cudaMemcpy(d_Y, h_Y.data(), sizeof(float) * num_items * K, cudaMemcpyHostToDevice);
 
+#if MOMENTUM
+    float *d_Xprev = nullptr, *d_Yprev = nullptr;
+    cudaMalloc(&d_Xprev, sizeof(float) * (long long)num_users * K);
+    cudaMalloc(&d_Yprev, sizeof(float) * (long long)num_items * K);
+    float mom_beta = 0.3f;   // validated optimum, Netflix K=96 (07-21): iter 20->15,
+                             // 0 fails, test RMSE 0.81715 < baseline 0.81756. beta>=0.4
+                             // overshoots (wobble delays convergence), 0.5 diverges.
+    if (const char* e = getenv("MBETA")) mom_beta = atof(e);
+    printf("[MOMENTUM] heavy-ball extrapolation ON, beta=%.3f\n", mom_beta);
+#endif
+
     int   *d_train_users, *d_train_items, *d_test_users, *d_test_items;
     float *d_train_ratings, *d_test_ratings;
     double *d_sq_err;
@@ -118,6 +213,31 @@ int main(int argc, char* argv[]) {
     cudaMemcpy(d_test_users,    test_users_h.data(),    sizeof(int)   * nnz_test,  cudaMemcpyHostToDevice);
     cudaMemcpy(d_test_items,    test_items_h.data(),    sizeof(int)   * nnz_test,  cudaMemcpyHostToDevice);
     cudaMemcpy(d_test_ratings,  test_ratings_h.data(),  sizeof(float) * nnz_test,  cudaMemcpyHostToDevice);
+
+#if FAST_RMSE
+    // Test-side user CSR for the fast convergence-check RMSE (see common.cuh
+    // FAST_RMSE). Built once on the host; only the fp64 summation order
+    // changes relative to the COO enumeration.
+    int *d_t_offsets, *d_t_colidx; float *d_t_vals;
+    {
+        vector<int> t_off(num_users + 1, 0), t_col(nnz_test);
+        vector<float> t_val(nnz_test);
+        for (int j = 0; j < nnz_test; j++) t_off[test_users_h[j] + 1]++;
+        for (int u = 0; u < num_users; u++) t_off[u + 1] += t_off[u];
+        vector<int> t_cur(t_off.begin(), t_off.end() - 1);
+        for (int j = 0; j < nnz_test; j++) {
+            int p = t_cur[test_users_h[j]]++;
+            t_col[p] = test_items_h[j];
+            t_val[p] = test_ratings_h[j];
+        }
+        cudaMalloc(&d_t_offsets, sizeof(int)   * (num_users + 1));
+        cudaMalloc(&d_t_colidx,  sizeof(int)   * nnz_test);
+        cudaMalloc(&d_t_vals,    sizeof(float) * nnz_test);
+        cudaMemcpy(d_t_offsets, t_off.data(), sizeof(int)   * (num_users + 1), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_t_colidx,  t_col.data(), sizeof(int)   * nnz_test,        cudaMemcpyHostToDevice);
+        cudaMemcpy(d_t_vals,    t_val.data(), sizeof(float) * nnz_test,        cudaMemcpyHostToDevice);
+    }
+#endif
 
     // Build BALS tile format
     vector<int>   user_tile_ptr, user_tile_colidx, user_seg_ptr, user_seg_colidx;
@@ -349,6 +469,67 @@ int main(int argc, char* argv[]) {
         cudaMemcpy(d_chol_map, hmap.data(), hmap.size() * sizeof(int2), cudaMemcpyHostToDevice);
     }
 
+#if CHOL_MP != 0
+    // Non-finite-solve counter for the mixed-precision solver (FP16 overflow
+    // / breakdown guard — see CHOL_MP in common.cuh). Zeroed per training
+    // run, reported in the profile block.
+    int* d_chol_fail = nullptr;
+    cudaMalloc(&d_chol_fail, sizeof(int));
+    cudaMemset(d_chol_fail, 0, sizeof(int));
+#endif
+#if CHOL_STALE
+    // Per-entity tiled-L cache (see CHOL_STALE in common.cuh). BF16 tile
+    // image, refreshed on warmup/refresh iterations, read by the stale-
+    // refine kernel in between.
+    chol_store_t *d_Lcache_u = nullptr, *d_Lcache_i = nullptr;
+    {
+        size_t eu = (size_t)num_users * chol_cache_elems<K_DIM>();
+        size_t ei = (size_t)num_items * chol_cache_elems<K_DIM>();
+        cudaError_t r1 = cudaMalloc(&d_Lcache_u, eu * sizeof(chol_store_t));
+        cudaError_t r2 = cudaMalloc(&d_Lcache_i, ei * sizeof(chol_store_t));
+        if (r1 != cudaSuccess || r2 != cudaSuccess) {
+            printf("CHOL_STALE: L-cache alloc FAILED (%.2f GB needed). Rebuild with a smaller -DENTITY_BATCH_SIZE (shrinks the 2 LHS buffers) or a smaller K.\n",
+                   (double)(eu + ei) * sizeof(chol_store_t) / 1e9);
+            return 1;
+        }
+        printf("CHOL_STALE: L-cache %.2f GB | warmup=%d full iters | refresh every %d iters | residual gate tau=%.2f\n",
+               (double)(eu + ei) * sizeof(chol_store_t) / 1e9,
+               (int)CHOL_STALE_WARMUP, (int)CHOL_STALE_REFRESH, (double)CHOL_STALE_TAU);
+    }
+    // Residual-gate work buffers (per-batch list of entities needing a full
+    // re-solve, device-side count, and a per-run total for reporting).
+    int *d_stale_cnt, *d_stale_list, *d_stale_total;
+    cudaMalloc(&d_stale_cnt,   sizeof(int));
+    cudaMalloc(&d_stale_list,  sizeof(int) * lhs_batch);
+    cudaMalloc(&d_stale_total, sizeof(int));
+    cudaMemset(d_stale_total, 0, sizeof(int));
+#endif
+
+#if CHOL_MP != 0
+    // Single dispatch site for the mixed-precision tiled solve. CACHE is the
+    // per-side L-cache base (d_Lcache_u / d_Lcache_i); its tokens are never
+    // expanded when CHOL_STALE=0, so the symbols need not exist there.
+#if CHOL_STALE
+    // Stale iterations run the residual-gated two-pass: stale-refine flags
+    // entities whose stale-L residual fails the τ gate into d_stale_list
+    // (leaving their RHS untouched), then a list-driven full mp solve re-does
+    // exactly those (device-side count -> no host sync, stream-ordered on sv;
+    // it also refreshes their cache slots = per-entity adaptive refresh).
+    #define CHOL_MP_SOLVE(KK, NTH, CACHE) do { \
+        chol_store_t* Lc_b_ = (CACHE) + (long long)bstart * chol_cache_elems<KK>(); \
+        if (chol_fresh) cholesky_solve_tiled_mp<KK, NTH, chol_store_t><<<bn, NTH, cholesky_tiled_smem_mp<KK, chol_store_t>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda, d_chol_fail, Lc_b_, nullptr, nullptr, d_nnzw); \
+        else { \
+            cudaMemsetAsync(d_stale_cnt, 0, sizeof(int), sv); \
+            cholesky_stale_refine<KK, NTH, chol_store_t><<<bn, NTH, cholesky_stale_smem<KK, chol_store_t>(), sv>>>(lhs_b, rhs_b, Lc_b_, bn, lambda, d_chol_fail, d_stale_cnt, d_stale_list, d_stale_total, (float)CHOL_STALE_TAU, d_nnzw); \
+            cholesky_solve_tiled_mp<KK, NTH, chol_store_t><<<bn, NTH, cholesky_tiled_smem_mp<KK, chol_store_t>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda, d_chol_fail, Lc_b_, d_stale_list, d_stale_cnt, d_nnzw); \
+        } \
+    } while (0)
+#else
+    #define CHOL_MP_SOLVE(KK, NTH, CACHE) \
+        cholesky_solve_tiled_mp<KK, NTH, chol_store_t><<<bn, NTH, cholesky_tiled_smem_mp<KK, chol_store_t>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda, d_chol_fail, (chol_store_t*)nullptr, nullptr, nullptr, d_nnzw)
+#endif
+#endif
+
 #ifdef USE_CUSOLVER
     cusolverDnHandle_t cusolver_h;
     cusolverDnCreate(&cusolver_h);
@@ -359,11 +540,19 @@ int main(int argc, char* argv[]) {
     cudaMalloc(&d_Bptr_i,      sizeof(float*) * lhs_batch);
     cudaMalloc(&d_info,        sizeof(int)    * lhs_batch);
     cudaMalloc(&d_info_single, sizeof(int));
-    auto cusolver_solve = [&](float* d_LHS, float* d_RHS, float** d_Aptr_, float** d_Bptr_, int n) {
+    auto cusolver_solve = [&](float* d_LHS, float* d_RHS, float** d_Aptr_, float** d_Bptr_, int n,
+                              const int* d_nnzw_) {
         build_ptr_array<<<(n + 255) / 256, 256>>>(d_Aptr_, d_LHS, (long long)K * K, n);
         build_ptr_array<<<(n + 255) / 256, 256>>>(d_Bptr_, d_RHS, (long long)K, n);
         long long tot = (long long)n * K;
+        // cuSOLVER can't fuse the diag add, so this fallback path (unsupported
+        // K only) keeps a pre-add kernel: weighted per-entity λ·nnz or plain λ.
+#if WEIGHTED_LAMBDA
+        add_weighted_lambda_diag<<<(int)((tot + 255) / 256), 256>>>(d_LHS, d_nnzw_, 0, n, K, lambda);
+#else
+        (void)d_nnzw_;
         add_lambda_diag<<<(int)((tot + 255) / 256), 256>>>(d_LHS, K, n, lambda);
+#endif
         cusolverDnSpotrfBatched(cusolver_h, CUBLAS_FILL_MODE_LOWER, K, d_Aptr_, K, d_info, n);
         cusolverDnSpotrsBatched(cusolver_h, CUBLAS_FILL_MODE_LOWER, K, 1, d_Aptr_, K, d_Bptr_, K, d_info_single, n);
     };
@@ -450,13 +639,16 @@ int main(int argc, char* argv[]) {
 #elif K_DIM == 16
     set_max_shared((const void*)cholesky_solve_packed<16>);
 #elif K_DIM == 32
-    set_max_shared((const void*)cholesky_solve_tiled<32, 64>);
+    set_max_shared((const void*)CHOL_TILED_SOLVER(32, 64));
 #elif K_DIM == 48
-    set_max_shared((const void*)cholesky_solve_tiled<48, 96>);
+    set_max_shared((const void*)CHOL_TILED_SOLVER(48, 96));
 #elif K_DIM == 64
-    set_max_shared((const void*)cholesky_solve_tiled<64, 128>);
+    set_max_shared((const void*)CHOL_TILED_SOLVER(64, 128));
 #else
-    set_max_shared((const void*)cholesky_solve_tiled<96, 128>);
+    set_max_shared((const void*)CHOL_TILED_SOLVER(96, 128));
+#endif
+#if CHOL_STALE
+    set_max_shared((const void*)cholesky_stale_refine<K_DIM, (K_DIM == 32 ? 64 : K_DIM == 48 ? 96 : 128), chol_store_t>);
 #endif
 
     // Training loop
@@ -477,6 +669,12 @@ int main(int argc, char* argv[]) {
         }
 
         printf("\n=== %s ===\n", label);
+#if CHOL_MP != 0
+        cudaMemset(d_chol_fail, 0, sizeof(int));
+#endif
+#if CHOL_STALE
+        cudaMemset(d_stale_total, 0, sizeof(int));
+#endif
         float prev_rmse = 1e9f, final_train_rmse = 0, final_test_rmse = 0;
         float total_u_compute=0, total_u_solve=0, total_i_compute=0, total_i_solve=0, total_rmse_t=0;
         int total_iters=0, rmse_calls=0;
@@ -489,6 +687,11 @@ int main(int argc, char* argv[]) {
 
         for (int iter = 0; iter < max_iters; iter++) {
             total_iters++;
+#if CHOL_STALE
+            // Full factorization + cache refresh during warmup and on every
+            // REFRESH-th iteration; stale-L + one IR step in between.
+            const bool chol_fresh = (iter < CHOL_STALE_WARMUP) || (iter % CHOL_STALE_REFRESH == 0);
+#endif
             int  lhs_blocks_u = use_mixed ? u_num_sjobs   : u_num_jobs;
             int* ju_tx        = use_mixed ? d_u_sjob_tx    : d_u_job_tx;
             int* ju_ch        = use_mixed ? d_u_sjob_chunk : d_u_job_chunk;
@@ -519,6 +722,9 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 // WMMA path for dense entities in this batch
+                // (07-21: K>=64 dense+giant kernels use in-kernel cp.async
+                // double-buffered staging; the block-per-entity experiment
+                // measured SLOWER — see FIXLOG — and is not dispatched.)
                 if (use_mixed && n_dense_u > 0) {
                     // giants: entities [0, n_giant_u) that fall in [bstart, bend)
                     int g0 = max(bstart, 0), g1 = min(bend, n_giant_u);
@@ -551,6 +757,11 @@ int main(int argc, char* argv[]) {
                 else if (rows_per_thread==16) LAUNCH_FUSED_KERNEL(lhs_blocks_u,16,num_users,d_u_tile_ptr,d_u_tile_colidx,d_u_seg_ptr,d_u_seg_colidx,d_u_seg_values,d_Y,lhs_b,d_X,d_u_tile_density,d_u_nz_list,d_u_nz_ptr,ju_tx,ju_ch,ju_nch,bstart,bn);
                 else if (rows_per_thread==32) LAUNCH_FUSED_KERNEL(lhs_blocks_u,32,num_users,d_u_tile_ptr,d_u_tile_colidx,d_u_seg_ptr,d_u_seg_colidx,d_u_seg_values,d_Y,lhs_b,d_X,d_u_tile_density,d_u_nz_list,d_u_nz_ptr,ju_tx,ju_ch,ju_nch,bstart,bn);
 
+#if WEIGHTED_LAMBDA
+                const int* d_nnzw = d_u_nnz + bstart;   // λ·nnz fused into solver diag pass (07-21)
+#else
+                const int* d_nnzw = nullptr;
+#endif
                 // Cholesky solve on sS, overlapping next batch's LHS+RHS
                 float* rhs_b = d_X + bstart * K;
                 bool piped = (bidx < MAX_PIPE_EVT);
@@ -559,23 +770,37 @@ int main(int argc, char* argv[]) {
                     cudaEventRecord(ev_lhs_u[bidx], sC);
                     cudaStreamWaitEvent(sS, ev_lhs_u[bidx], 0);
                 }
-                if      (K == 16 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<16><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, lambda);
-                else if (K == 32 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<32><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, lambda);
-                else if (K == 16) cholesky_solve_packed<16><<<bn, 32, (16*17/2+16)*sizeof(float), sv>>>(lhs_b, rhs_b, bn, lambda);
-                else if (K == 32) cholesky_solve_tiled<32, 64><<<bn, 64, cholesky_tiled_smem<32>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda);
-                else if (K == 48) cholesky_solve_tiled<48, 96><<<bn, 96, cholesky_tiled_smem<48>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda);
-                else if (K == 64) cholesky_solve_tiled<64, 128><<<bn, 128, cholesky_tiled_smem<64>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda);
-                else if (K == 96) cholesky_solve_tiled<96, 128><<<bn, 128, cholesky_tiled_smem<96>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda);
-#ifdef USE_CUSOLVER
-                else cusolver_solve(lhs_b, rhs_b, d_Aptr, d_Bptr_u, bn);
+                if      (K == 16 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<16><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, lambda, d_nnzw);
+                else if (K == 32 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<32><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, lambda, d_nnzw);
+                else if (K == 16) cholesky_solve_packed<16><<<bn, 32, (16*17/2+16)*sizeof(float), sv>>>(lhs_b, rhs_b, bn, lambda, d_nnzw);
+#if CHOL_MP == 0
+                else if (K == 32) cholesky_solve_tiled<32, 64><<<bn, 64, cholesky_tiled_smem<32>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda, d_nnzw);
+                else if (K == 48) cholesky_solve_tiled<48, 96><<<bn, 96, cholesky_tiled_smem<48>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda, d_nnzw);
+                else if (K == 64) cholesky_solve_tiled<64, 128><<<bn, 128, cholesky_tiled_smem<64>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda, d_nnzw);
+                else if (K == 96) cholesky_solve_tiled<96, 128><<<bn, 128, cholesky_tiled_smem<96>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda, d_nnzw);
 #else
-                else cholesky_solve_cooperative<<<bn, solve_threads, solve_smem, sv>>>(lhs_b,rhs_b,K,bn,lambda);
+                else if (K == 32) CHOL_MP_SOLVE(32, 64, d_Lcache_u);
+                else if (K == 48) CHOL_MP_SOLVE(48, 96, d_Lcache_u);
+                else if (K == 64) CHOL_MP_SOLVE(64, 128, d_Lcache_u);
+                else if (K == 96) CHOL_MP_SOLVE(96, 128, d_Lcache_u);   // NTH=192 bench-won but app-LOST (07-21 nsys 187->199 ms/iter); 128 stays
+#endif
+#ifdef USE_CUSOLVER
+                else cusolver_solve(lhs_b, rhs_b, d_Aptr, d_Bptr_u, bn, d_nnzw);
+#else
+                else cholesky_solve_cooperative<<<bn, solve_threads, solve_smem, sv>>>(lhs_b,rhs_b,K,bn,lambda,d_nnzw);
 #endif
                 if (piped) cudaEventRecord(ev_sol_u[bidx], sS);
             }
             cudaEventRecord(t1);
             // user cholesky timing merged into t0-t1
             cudaEventRecord(t2);
+
+#if MOMENTUM
+            // Extrapolate X before the item phase reads it (d_X + the fp16
+            // convert below). beta=0 on iter 0 just seeds d_Xprev.
+            momentum_extrapolate<<<(num_users * K + 255) / 256, 256>>>(
+                d_X, d_Xprev, (long long)num_users * K, iter == 0 ? 0.0f : mom_beta);
+#endif
 
             int  lhs_blocks_i = use_mixed ? i_num_sjobs   : i_num_jobs;
             int* ji_tx        = use_mixed ? d_i_sjob_tx    : d_i_job_tx;
@@ -636,6 +861,11 @@ int main(int argc, char* argv[]) {
                 else if (rows_per_thread==16) LAUNCH_FUSED_KERNEL(lhs_blocks_i,16,num_items,d_i_tile_ptr,d_i_tile_colidx,d_i_seg_ptr,d_i_seg_colidx,d_i_seg_values,d_X,lhs_b,d_Y,d_i_tile_density,d_i_nz_list,d_i_nz_ptr,ji_tx,ji_ch,ji_nch,bstart,bn);
                 else if (rows_per_thread==32) LAUNCH_FUSED_KERNEL(lhs_blocks_i,32,num_items,d_i_tile_ptr,d_i_tile_colidx,d_i_seg_ptr,d_i_seg_colidx,d_i_seg_values,d_X,lhs_b,d_Y,d_i_tile_density,d_i_nz_list,d_i_nz_ptr,ji_tx,ji_ch,ji_nch,bstart,bn);
                 
+#if WEIGHTED_LAMBDA
+                const int* d_nnzw = d_i_nnz + bstart;   // λ·nnz fused into solver diag pass (07-21)
+#else
+                const int* d_nnzw = nullptr;
+#endif
                 float* rhs_b = d_Y + bstart * K;
                 bool piped = (bidx < MAX_PIPE_EVT);
                 cudaStream_t sv = piped ? sS : sC;
@@ -643,23 +873,37 @@ int main(int argc, char* argv[]) {
                     cudaEventRecord(ev_lhs_i[bidx], sC);
                     cudaStreamWaitEvent(sS, ev_lhs_i[bidx], 0);
                 }
-                if      (K == 16 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<16><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, lambda);
-                else if (K == 32 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<32><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, lambda);
-                else if (K == 16) cholesky_solve_packed<16><<<bn, 32, (16*17/2+16)*sizeof(float), sv>>>(lhs_b, rhs_b, bn, lambda);
-                else if (K == 32) cholesky_solve_tiled<32, 64><<<bn, 64, cholesky_tiled_smem<32>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda);
-                else if (K == 48) cholesky_solve_tiled<48, 96><<<bn, 96, cholesky_tiled_smem<48>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda);
-                else if (K == 64) cholesky_solve_tiled<64, 128><<<bn, 128, cholesky_tiled_smem<64>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda);
-                else if (K == 96) cholesky_solve_tiled<96, 128><<<bn, 128, cholesky_tiled_smem<96>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda);
-#ifdef USE_CUSOLVER
-                else cusolver_solve(lhs_b, rhs_b, d_Aptr, d_Bptr_i, bn);
+                if      (K == 16 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<16><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, lambda, d_nnzw);
+                else if (K == 32 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<32><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, lambda, d_nnzw);
+                else if (K == 16) cholesky_solve_packed<16><<<bn, 32, (16*17/2+16)*sizeof(float), sv>>>(lhs_b, rhs_b, bn, lambda, d_nnzw);
+#if CHOL_MP == 0
+                else if (K == 32) cholesky_solve_tiled<32, 64><<<bn, 64, cholesky_tiled_smem<32>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda, d_nnzw);
+                else if (K == 48) cholesky_solve_tiled<48, 96><<<bn, 96, cholesky_tiled_smem<48>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda, d_nnzw);
+                else if (K == 64) cholesky_solve_tiled<64, 128><<<bn, 128, cholesky_tiled_smem<64>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda, d_nnzw);
+                else if (K == 96) cholesky_solve_tiled<96, 128><<<bn, 128, cholesky_tiled_smem<96>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, lambda, d_nnzw);
 #else
-                else cholesky_solve_cooperative<<<bn, solve_threads, solve_smem, sv>>>(lhs_b,rhs_b,K,bn,lambda);
+                else if (K == 32) CHOL_MP_SOLVE(32, 64, d_Lcache_i);
+                else if (K == 48) CHOL_MP_SOLVE(48, 96, d_Lcache_i);
+                else if (K == 64) CHOL_MP_SOLVE(64, 128, d_Lcache_i);
+                else if (K == 96) CHOL_MP_SOLVE(96, 128, d_Lcache_i);
+#endif
+#ifdef USE_CUSOLVER
+                else cusolver_solve(lhs_b, rhs_b, d_Aptr, d_Bptr_i, bn, d_nnzw);
+#else
+                else cholesky_solve_cooperative<<<bn, solve_threads, solve_smem, sv>>>(lhs_b,rhs_b,K,bn,lambda,d_nnzw);
 #endif
                 if (piped) cudaEventRecord(ev_sol_i[bidx], sS);
             }
             cudaEventRecord(t4);
             // item cholesky timing merged into t3-t4
             cudaEventRecord(t5);
+
+#if MOMENTUM
+            // Extrapolate Y after its solve, before the RMSE check / next
+            // iter's user phase reads it.
+            momentum_extrapolate<<<(num_items * K + 255) / 256, 256>>>(
+                d_Y, d_Yprev, (long long)num_items * K, iter == 0 ? 0.0f : mom_beta);
+#endif
 
             cudaEventSynchronize(t5);
             float ms;
@@ -670,6 +914,22 @@ int main(int argc, char* argv[]) {
 
             if ((iter+1)%5==0 || iter==max_iters-1) {
                 cudaEventRecord(t6);
+#if FAST_RMSE
+                // fp16 factor images may be stale (Y_half converts at user-
+                // phase start, X_half at item-phase start) — refresh both.
+                convert_fp32_to_fp16<<<(num_users * K + 255) / 256, 256>>>(d_X, d_X_half, num_users * K);
+                convert_fp32_to_fp16<<<(num_items * K + 255) / 256, 256>>>(d_Y, d_Y_half, num_items * K);
+                cudaMemset(d_sq_err, 0, sizeof(double));
+                compute_RMSE_csr_half<K_DIM><<<(num_users * 32 + 255) / 256, 256>>>(
+                    d_u_offsets, d_u_colidx, d_u_csr_vals, num_users, d_X_half, d_Y_half, d_sq_err);
+                double h_sq_train;
+                cudaMemcpy(&h_sq_train, d_sq_err, sizeof(double), cudaMemcpyDeviceToHost);
+                cudaMemset(d_sq_err, 0, sizeof(double));
+                compute_RMSE_csr_half<K_DIM><<<(num_users * 32 + 255) / 256, 256>>>(
+                    d_t_offsets, d_t_colidx, d_t_vals, num_users, d_X_half, d_Y_half, d_sq_err);
+                double h_sq_test;
+                cudaMemcpy(&h_sq_test, d_sq_err, sizeof(double), cudaMemcpyDeviceToHost);
+#else
                 cudaMemset(d_sq_err, 0, sizeof(double));
                 int rb_tr = (nnz_train + 255) / 256;
                 compute_RMSE_kernel<<<rb_tr,256>>>(d_train_users,d_train_items,d_train_ratings,nnz_train,d_X,d_Y,K,d_sq_err);
@@ -680,6 +940,7 @@ int main(int argc, char* argv[]) {
                 compute_RMSE_kernel<<<rb_te,256>>>(d_test_users,d_test_items,d_test_ratings,nnz_test,d_X,d_Y,K,d_sq_err);
                 double h_sq_test;
                 cudaMemcpy(&h_sq_test, d_sq_err, sizeof(double), cudaMemcpyDeviceToHost);
+#endif
                 cudaEventRecord(t7); cudaEventSynchronize(t7);
                 cudaEventElapsedTime(&ms, t6, t7); total_rmse_t += ms;
                 rmse_calls++;
@@ -697,6 +958,27 @@ int main(int argc, char* argv[]) {
             }
         }
 
+#if FAST_RMSE
+        {
+            // Reported finals are fp32-exact: one COO pass after convergence
+            // (the per-check values above used fp16 factor gathers).
+            cudaEventRecord(t6);
+            cudaMemset(d_sq_err, 0, sizeof(double));
+            compute_RMSE_kernel<<<(nnz_train + 255) / 256, 256>>>(d_train_users, d_train_items, d_train_ratings, nnz_train, d_X, d_Y, K, d_sq_err);
+            double h_sq_train;
+            cudaMemcpy(&h_sq_train, d_sq_err, sizeof(double), cudaMemcpyDeviceToHost);
+            cudaMemset(d_sq_err, 0, sizeof(double));
+            compute_RMSE_kernel<<<(nnz_test + 255) / 256, 256>>>(d_test_users, d_test_items, d_test_ratings, nnz_test, d_X, d_Y, K, d_sq_err);
+            double h_sq_test;
+            cudaMemcpy(&h_sq_test, d_sq_err, sizeof(double), cudaMemcpyDeviceToHost);
+            cudaEventRecord(t7); cudaEventSynchronize(t7);
+            float ms2; cudaEventElapsedTime(&ms2, t6, t7); total_rmse_t += ms2; rmse_calls++;
+            final_train_rmse = sqrtf((float)(h_sq_train / nnz_train));
+            final_test_rmse  = sqrtf((float)(h_sq_test  / nnz_test));
+            printf("Final fp32-exact | Train RMSE: %.6f | Test RMSE: %.6f\n", final_train_rmse, final_test_rmse);
+        }
+#endif
+
         double fps=(double)nnz_train*(K*(K+1)/2.0+K)*2.0;
         double gft=fps*2.0*total_iters/1e9;
         float ums=total_u_compute/total_iters, ims=total_i_compute/total_iters;
@@ -705,6 +987,21 @@ int main(int argc, char* argv[]) {
         printf("User Cholesky:%7.2f ms total | %5.2f ms/iter\n",total_u_solve,total_u_solve/total_iters);
         printf("Item LHS+RHS: %7.2f ms total | %5.2f ms/iter | %6.1f GFlops/s\n",total_i_compute,ims,fps/(ims*1e-3)/1e9);
         printf("Item Cholesky:%7.2f ms total | %5.2f ms/iter\n",total_i_solve,total_i_solve/total_iters);
+#if CHOL_MP != 0
+        {
+            int h_chol_fail = 0;
+            cudaMemcpy(&h_chol_fail, d_chol_fail, sizeof(int), cudaMemcpyDeviceToHost);
+            printf("CHOL_MP [%s]: non-finite solves zeroed = %d entity-iters%s\n",
+                   CHOL_MP_STR, h_chol_fail,
+                   h_chol_fail > 0 ? "  <-- overflow/breakdown; if >0.1 pct of solves, abandon this precision" : "");
+#if CHOL_STALE
+            int h_stale_total = 0;
+            cudaMemcpy(&h_stale_total, d_stale_total, sizeof(int), cudaMemcpyDeviceToHost);
+            printf("CHOL_STALE gate (tau=%.2f): %d entity-iters failed the residual gate and were full-re-solved\n",
+                   (double)CHOL_STALE_TAU, h_stale_total);
+#endif
+        }
+#endif
         if (rmse_calls>0) printf("RMSE:         %7.2f ms total | %5.2f ms/call\n",total_rmse_t,total_rmse_t/rmse_calls);
         float tc=total_u_compute+total_u_solve+total_i_compute+total_i_solve;
         float gt=tc+total_rmse_t;
@@ -730,6 +1027,9 @@ int main(int argc, char* argv[]) {
 
     cudaFree(d_train_users); cudaFree(d_train_items); cudaFree(d_train_ratings);
     cudaFree(d_test_users);  cudaFree(d_test_items);  cudaFree(d_test_ratings);
+#if FAST_RMSE
+    cudaFree(d_t_offsets);   cudaFree(d_t_colidx);    cudaFree(d_t_vals);
+#endif
     cudaFree(d_sq_err);
     cudaStreamDestroy(sC);   cudaStreamDestroy(sS);
     for (int i = 0; i < MAX_PIPE_EVT; i++) {
@@ -748,5 +1048,11 @@ int main(int argc, char* argv[]) {
     cudaFree(d_i_nz_list);   cudaFree(d_i_nz_ptr);
     cudaFree(d_u_job_tx);    cudaFree(d_u_job_chunk);  cudaFree(d_u_job_nch);
     cudaFree(d_i_job_tx);    cudaFree(d_i_job_chunk);  cudaFree(d_i_job_nch);
+#if CHOL_MP != 0
+    cudaFree(d_chol_fail);
+#endif
+#if CHOL_STALE
+    cudaFree(d_Lcache_u);    cudaFree(d_Lcache_i);
+#endif
     return 0;
 }

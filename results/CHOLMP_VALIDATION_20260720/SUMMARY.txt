@@ -1,0 +1,106 @@
+════════════════════════════════════════════════════════════════════════
+ CHOL_MP / CHOL_STALE GPU VALIDATION — 2026-07-20, GPU1 RTX 3060 (sm_86)
+ Executes the FIXLOG SYNC-2026-07-20 test checklist. Netflix frozen split
+ (netflix_ratings.bin). Records compared against:
+   * plain-λ regime: final results/netflix_gpu.txt (07-06, λ=0.10 legacy init)
+   * production regime: results/RMSE_COMPARISON_20260712_225827.txt
+     (weighted-λ ALS-WR λ=0.048 + CUMF_INIT, 20 iters)
+════════════════════════════════════════════════════════════════════════
+
+STEP 0 — compile smoke + FP32 regression: PASS
+  ptxas (all variants, every K): 0 spills; mp kernels 40-48 regs (fp32: 56).
+  justapr K=96 no-flags run = 07-06 record digit-for-digit on train RMSE
+  (0.545780 @ iter45), test within known ±3e-6 wobble, wall 22.57s (rec 22.70).
+  only_scalar_fp32.cu with CHOL_MP flags hard-errors as designed.
+  Two code fixes were needed (see FIXLOG SYNC-2026-07-20b):
+   (1) chol_cache_elems(): missing __host__ __device__ (CHOL_STALE no-compile);
+   (2) mp kernel had a SILENT-overflow hole: an inf 16-bit diag never goes NaN
+       (iD=1/inf=0 -> whole solution silently 0, fail counter never fires).
+       Fixed with a diag finiteness gate at load (Gram property: any entry
+       overflow implies a diag overflow). Verified: overflow probe went from
+       "fails 0/60000 (wrong)" to "fails 60000/60000".
+
+STEP 1 — kernel bench, 60k synthetic SPD systems (bench_mp.cu in this dir):
+  ms/launch (K=96):  fp32 29.3 | fp16/bf16-noref 21.9 (-25%) | ±IR 27.2 | stale 11.5
+  ms/launch (K=64):  fp32 10.6 | noref 9.2 (dispatch NTH=128; 8.6 @ NTH=96) | ±IR 12.9
+  max/mean rel err vs CPU fp64 (K=96): fp32 1e-4/1.5e-7 | fp16nr 0.16/5.6e-4 |
+    bf16nr 2.3/4.3e-3 | fp16+IR 2.6e-4/4.3e-7 | bf16+IR 9.4e-3/2.3e-5
+  NTH probe: mp kernel prefers NTH=96 at K<=64; 96≈128 at K=96 (keep 128).
+
+STEPS 2-3a — justapr.cu, PLAIN λ=0.10 + legacy init (the 07-06 regime):
+  ALL FOUR 16-bit variants FAIL CATASTROPHICALLY at K=96.
+    fp16-noref: 1,527,226 zeroed solves; RMSE explodes
+    bf16-noref: 9,828,338 zeroed; train inf
+    bf16+IR:    2,408,743 zeroed; NaN from iter 5
+    fp16+IR:    2,433,334 zeroed; explodes
+  Cause: κ(A) ≈ ||A||/λ ~ 1e5-1e6 for heavy entities under plain λ=0.1 →
+  16-bit factorization loses positive-definiteness; u16·κ >> 1 so one IR
+  step cannot contract. THE 16-BIT SOLVER IS DEAD IN THE PLAIN-λ REGIME.
+
+STEPS 2-3b — main_experiment.cu, WEIGHTED-λ 0.048 + CUMF_INIT (production):
+  weighted-λ caps κ ≈ ||A||/(λ·nnz) = O(100) for EVERY entity → all pass.
+  K=96, vs 07-12 record (fp32 solver: user solve 238.65 ms/iter, APR wall
+  10.586 s, test 0.817558):
+    variant    user-solve   APR wall   test RMSE      fails
+    bf16+IR    215.6 -9.7%  10.110 s   0.817565 +7e-6   0
+    fp16+IR    217.4 -8.9%  10.147 s   0.817558 exact   0
+    bf16-nr    181.8 -23.8%  9.409 s   0.817598 +4e-5   0
+    fp16-nr    183.2 -23.2%  9.438 s   0.817558 exact   0   <== WINNER
+  New K=96 headline: APR wall 9.438 s vs fp32-scalar baseline record 154.50 s
+  = 16.4x wall (was 14.6x with the fp32 solver).
+
+STEP 4 — K-sweep of fp16-noref (main_experiment, weighted-λ):
+  K=32: DESTROYED — test 1.1664 (record 0.8233), 50 iters no convergence,
+        4,571 zeroed solves. Fails concentrate on GIANT items (top-nnz
+        movies) whose dominant factor components overflow fp16 at low K.
+        NOTE: 4,571 ≈ 0.018% of solves — far below the naive "0.1%" gate —
+        yet it destroyed the run. Correct gate is fails == 0 + record parity.
+  K=48: parity (0.820455) but +5 convergence iters (25 vs 20) → wall 3.740
+        vs 3.044 WORSE. Solve noise costs more iterations than it saves.
+  K=64: parity (0.819061), same 20 iters, wall 5.239 vs 5.457 (-4%), but 61
+        zeroed giant-item solves (recovered here; dataset-dependent risk).
+  K=64 bf16-noref probe: 0 fails, parity +6.8e-5, wall 5.241 (-4%) — the
+        overflow-free K=64 option if -4% ever matters.
+  DISPATCH RULE (adopted): mp solver at K=96 ONLY; FP32 tiled at K<=64.
+
+STEP 5 — stale-L cache (justapr.cu + weighted-λ port, K=64, GPU1):
+  refs: wl fp32 wall 5.439 s (test 0.819080) | wl bf16+IR fresh-every-iter
+  5.803 s (IR overhead makes mp SLOWER than fp32 at K=64, matches bench).
+  stale runs (warmup 5; refresh 3 / 5 / 8): healthy through warmup, then
+  COLLAPSE to a zeroed model (train=test=3.7643, delta=0) within 2-5 stale
+  iterations; 81,570 / 18,356 / 17,871 zeroed solves. Identical collapse at
+  every cadence → NOT a refresh-frequency problem: per-entity divergence of
+  the single stale-L IR step (light/fast-drifting entities have contraction
+  factor > 1), zeroed entities poison the next phase, cascade. STALE-L IS
+  MEASURED-DEAD AS IMPLEMENTED despite 2.5x kernel-level potential (11.5 vs
+  29.3 ms). K=96 stale unrun (cache alloc 5.35 GB failed at EBS=30000; moot).
+
+WEIGHTED-λ PORT (justapr.cu), validated both directions:
+  no-flags build = legacy trajectory digit-for-digit (0.545780 @ 45);
+  -DWEIGHTED_LAMBDA=1 -DCUMF_INIT=1 K=96 fp32 = 07-12 record test RMSE
+  EXACTLY (0.817558 @ 20 iters).
+
+SHIP RECIPE (Netflix, weighted-λ ALS-WR λ=0.048, CUMF_INIT=1):
+  K=96:  nvcc ... -DK_DIM=96 -DCUMF_INIT=1 -DCHOL_MP=2  (fp16 tiles, no IR)
+  K<=64: build WITHOUT CHOL_MP (fp32 tiled solver of record)
+  NEVER combine CHOL_MP with plain-λ (WEIGHTED_LAMBDA=0) — measured fatal.
+
+════════════════════════════════════════════════════════════════════════
+ ADDENDUM (same day, second external plan fact-checked) — see FIXLOG 07-20c
+════════════════════════════════════════════════════════════════════════
+WOODBURY LIGHT-ENTITY SOLVE (bench_woodbury.cu, nnz_hist.py in this dir):
+  Premise check: 55.3% of users (median nnz=77) below K=96, NOT the claimed
+  80%; items 10.6%. Claimed 1.5-2x wall exceeds the 1.23x Amdahl ceiling.
+  Measured vs fp16nr tiled solve: 6.0x/3.0x/1.6x/1.06x at nnz=8/16/24/32,
+  LOSES 4-9x at nnz>=48. Fold vs real histogram: -4.3% wall at K=96
+  (9.44 -> 9.04 s). Real but modest; integration parked.
+RESIDUAL-GATED STALE-L (K=64, weighted-lambda): DEAD with tau-bracket proof.
+  tau=0.5: 56% gate-fail + divergence to inf (run_apr_k64_wl_gstale.txt)
+  tau=0.1: 76% gate-fail + non-convergent oscillation, wall 15.2 s vs
+           5.8 s fresh-bf16ir / 5.44 s fp32 (run_apr_k64_wl_gstale01.txt)
+  No tau gives both stability and savings: kappa(50-200) x per-iter drift
+  >= 1 for most entities. Machinery (gate + device list + list-driven
+  re-solve) stays in-tree behind CHOL_STALE for the record.
+WMMA-PANEL-SYRK: rejected on record (07-06 phase probes: deleting SYRK-b
+  moves <=5%; kernel at 2% FLOP peak; stride-17 vs ldm%8 repack would cost
+  the occupancy that IS the mp win).

@@ -1,0 +1,61 @@
+k          :128
+num_workers:256
+u_grid     :1
+v_grid     :1
+x_grid     :1
+y_grid     :1
+ux         :1
+vy         :1
+num_iters  :10
+gpu        :0
+lambda_p   :0.05000
+lambda_q   :0.05000
+lrate      :0.00000
+alpha      :0.0800
+beta       :0.3000
+tr_path    :/tmp/claude-1000/-home-pc-Desktop-2007080-latent-factorr-experimen/21b4a089-b675-4fc0-96a8-1a179a2a72ae/scratchpad/conv/ml10m/sgd/train.bin
+va_path    :
+model_path :/tmp/aprccdsgd_rt16e36k/ml10m.model.t10
+read_problem called
+m:69878, n:10676, nnz:8026731
+time elapsed:0.21762000s
+shuffle problem ...
+time elapsed:0.00752400s
+
+
+
+grid problem ...
+swapping ...
+grid swap time:0.02074300s
+
+
+scale problem ...
+time elapsed:0.00344000s
+
+
+
+init model ...
+state_size:69888
+grid:0
+state_size:10752
+grid:0
+time elapsed:0.03808700s
+
+
+
+calling sgd_update_k128() ...
+update_per_sec:463455855.606173
+SGD_TRAIN_SECONDS: 0.173118 for 10 iters (k=128)
+scale model ...
+time elapsed:0.00171600s
+
+
+
+save_model() is called
+saving feature p(69878)...
+saving feature q(10676)...
+time elapsed:0.02672300s
+
+training application finished...
+
+

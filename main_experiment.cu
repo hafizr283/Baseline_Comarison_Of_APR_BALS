@@ -48,8 +48,13 @@ __global__ void add_weighted_lambda_diag(float* __restrict__ d_LHS_all,
 }
 #endif
 
+#if CHOL_STALE
+#error "CHOL_STALE is wired in justapr.cu only (the lean experiment binary). Validate it there first, then port the wiring here (cache alloc x2 legs + chol_fresh cadence + dispatch)."
+#endif
+
 int main(int argc, char* argv[]) {
-    printf("=== CODE VERSION: SYNC-2026-07-06 [TILED-cholesky + float4 load map (bit-identical) + RMSE const-restrict + true-solve-timing] ===\n");
+    printf("=== CODE VERSION: SYNC-2026-07-20 [CHOL-MP 16-bit tiled Cholesky + optional IR — UNVALIDATED ON GPU; CHOL_MP=0 path = 07-06 code] ===\n");
+    printf("Tiled Cholesky precision: %s\n", CHOL_MP_STR);
     printf("Regularization: %s\n", WEIGHTED_LAMBDA
         ? "WEIGHTED lambda (ALS-WR, cumf_als-style: diag += nnz_e*lambda)"
         : "PLAIN lambda (diag += lambda)");
@@ -442,6 +447,21 @@ int main(int argc, char* argv[]) {
         cudaMemcpy(d_chol_map, hmap.data(), hmap.size() * sizeof(int2), cudaMemcpyHostToDevice);
     }
 
+#if CHOL_MP != 0
+    // Non-finite-solve counter for the mixed-precision solver (FP16 overflow
+    // / breakdown guard — see CHOL_MP in common.cuh). Zeroed per training
+    // run (both legs), reported in each profile block. NOTE: BOTH legs
+    // (baseline and APR) use the mp solver, so the comparison stays
+    // apples-to-apples — but the FP32-vs-FP32 headline of record must come
+    // from a CHOL_MP=0 build.
+    int* d_chol_fail = nullptr;
+    cudaMalloc(&d_chol_fail, sizeof(int));
+    cudaMemset(d_chol_fail, 0, sizeof(int));
+    // Single dispatch site for the mixed-precision tiled solve.
+    #define CHOL_MP_SOLVE(KK, NTH) \
+        cholesky_solve_tiled_mp<KK, NTH, chol_store_t><<<bn, NTH, cholesky_tiled_smem_mp<KK, chol_store_t>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, solver_lambda, d_chol_fail, (chol_store_t*)nullptr)
+#endif
+
 #ifdef USE_CUSOLVER
     cusolverDnHandle_t cusolver_h;
     cusolverDnCreate(&cusolver_h);
@@ -560,13 +580,13 @@ int main(int argc, char* argv[]) {
 #elif K_DIM == 16
     set_max_shared((const void*)cholesky_solve_packed<16>);
 #elif K_DIM == 32
-    set_max_shared((const void*)cholesky_solve_tiled<32, 64>);
+    set_max_shared((const void*)CHOL_TILED_SOLVER(32, 64));
 #elif K_DIM == 48
-    set_max_shared((const void*)cholesky_solve_tiled<48, 96>);
+    set_max_shared((const void*)CHOL_TILED_SOLVER(48, 96));
 #elif K_DIM == 64
-    set_max_shared((const void*)cholesky_solve_tiled<64, 128>);
+    set_max_shared((const void*)CHOL_TILED_SOLVER(64, 128));
 #else
-    set_max_shared((const void*)cholesky_solve_tiled<96, 128>);
+    set_max_shared((const void*)CHOL_TILED_SOLVER(96, 128));
 #endif
 
     // Training loop
@@ -587,6 +607,9 @@ int main(int argc, char* argv[]) {
         }
 
         printf("\n=== %s ===\n", label);
+#if CHOL_MP != 0
+        cudaMemset(d_chol_fail, 0, sizeof(int));
+#endif
         float prev_rmse = 1e9f, final_train_rmse = 0, final_test_rmse = 0;
         float total_u_compute=0, total_u_solve=0, total_i_compute=0, total_i_solve=0, total_rmse_t=0;
         int total_iters=0, rmse_calls=0;
@@ -710,10 +733,17 @@ int main(int argc, char* argv[]) {
                 if      (K == 16 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<16><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, solver_lambda);
                 else if (K == 32 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<32><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, solver_lambda);
                 else if (K == 16) cholesky_solve_packed<16><<<bn, 32, (16*17/2+16)*sizeof(float), sv>>>(lhs_b, rhs_b, bn, solver_lambda);
+#if CHOL_MP == 0
                 else if (K == 32) cholesky_solve_tiled<32, 64><<<bn, 64, cholesky_tiled_smem<32>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, solver_lambda);
                 else if (K == 48) cholesky_solve_tiled<48, 96><<<bn, 96, cholesky_tiled_smem<48>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, solver_lambda);
                 else if (K == 64) cholesky_solve_tiled<64, 128><<<bn, 128, cholesky_tiled_smem<64>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, solver_lambda);
                 else if (K == 96) cholesky_solve_tiled<96, 128><<<bn, 128, cholesky_tiled_smem<96>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, solver_lambda);
+#else
+                else if (K == 32) CHOL_MP_SOLVE(32, 64);
+                else if (K == 48) CHOL_MP_SOLVE(48, 96);
+                else if (K == 64) CHOL_MP_SOLVE(64, 128);
+                else if (K == 96) CHOL_MP_SOLVE(96, 128);
+#endif
 #ifdef USE_CUSOLVER
                 else cusolver_solve(lhs_b, rhs_b, d_Aptr, d_Bptr_u, bn);   // dead for supported K (compile guard)
 #else
@@ -806,10 +836,17 @@ int main(int argc, char* argv[]) {
                 if      (K == 16 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<16><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, solver_lambda);
                 else if (K == 32 && K <= BATCHED_CHOLESKY_MAX_K) cholesky_solve_batched<32><<<(bn + 127) / 128, 128, 0, sv>>>(lhs_b, rhs_b, bn, solver_lambda);
                 else if (K == 16) cholesky_solve_packed<16><<<bn, 32, (16*17/2+16)*sizeof(float), sv>>>(lhs_b, rhs_b, bn, solver_lambda);
+#if CHOL_MP == 0
                 else if (K == 32) cholesky_solve_tiled<32, 64><<<bn, 64, cholesky_tiled_smem<32>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, solver_lambda);
                 else if (K == 48) cholesky_solve_tiled<48, 96><<<bn, 96, cholesky_tiled_smem<48>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, solver_lambda);
                 else if (K == 64) cholesky_solve_tiled<64, 128><<<bn, 128, cholesky_tiled_smem<64>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, solver_lambda);
                 else if (K == 96) cholesky_solve_tiled<96, 128><<<bn, 128, cholesky_tiled_smem<96>(), sv>>>(lhs_b, rhs_b, d_chol_map, chol_nvec, chol_ntot, bn, solver_lambda);
+#else
+                else if (K == 32) CHOL_MP_SOLVE(32, 64);
+                else if (K == 48) CHOL_MP_SOLVE(48, 96);
+                else if (K == 64) CHOL_MP_SOLVE(64, 128);
+                else if (K == 96) CHOL_MP_SOLVE(96, 128);
+#endif
 #ifdef USE_CUSOLVER
                 else cusolver_solve(lhs_b, rhs_b, d_Aptr, d_Bptr_i, bn);   // dead for supported K (compile guard)
 #else
@@ -874,6 +911,15 @@ int main(int argc, char* argv[]) {
         printf("User Cholesky:%7.2f ms total | %5.2f ms/iter\n",total_u_solve,total_u_solve/total_iters);
         printf("Item LHS+RHS: %7.2f ms total | %5.2f ms/iter | %6.1f GFlops/s\n",total_i_compute,ims,fps/(ims*1e-3)/1e9);
         printf("Item Cholesky:%7.2f ms total | %5.2f ms/iter\n",total_i_solve,total_i_solve/total_iters);
+#if CHOL_MP != 0
+        {
+            int h_chol_fail = 0;
+            cudaMemcpy(&h_chol_fail, d_chol_fail, sizeof(int), cudaMemcpyDeviceToHost);
+            printf("CHOL_MP [%s]: non-finite solves zeroed = %d entity-iters%s\n",
+                   CHOL_MP_STR, h_chol_fail,
+                   h_chol_fail > 0 ? "  <-- overflow/breakdown; if >0.1 pct of solves, abandon this precision" : "");
+        }
+#endif
         if (rmse_calls>0) printf("RMSE:         %7.2f ms total | %5.2f ms/call\n",total_rmse_t,total_rmse_t/rmse_calls);
         if (nbuf == 2) printf("(Cholesky overlaps next batch's LHS+RHS on a 2nd stream; LHS+RHS rows = EXPOSED time = phase span minus solve busy time, so their GFlops/s overstates pure kernel throughput. Totals/speedups remain exact.)\n");
         float tc=total_u_compute+total_u_solve+total_i_compute+total_i_solve;

@@ -1,0 +1,61 @@
+k          :128
+num_workers:384
+u_grid     :1
+v_grid     :1
+x_grid     :1
+y_grid     :1
+ux         :1
+vy         :1
+num_iters  :40
+gpu        :0
+lambda_p   :0.05000
+lambda_q   :0.05000
+lrate      :0.00000
+alpha      :0.0800
+beta       :0.3000
+tr_path    :/tmp/claude-1000/-home-pc-Desktop-2007080-latent-factorr-experimen/21b4a089-b675-4fc0-96a8-1a179a2a72ae/scratchpad/conv/ml20m/sgd/train.bin
+va_path    :
+model_path :/tmp/aprccdsgd_k_bi46r6/ml20m.model.t40
+read_problem called
+m:138493, n:26744, nnz:16052927
+time elapsed:0.40884000s
+shuffle problem ...
+time elapsed:0.01579400s
+
+
+
+grid problem ...
+swapping ...
+grid swap time:0.04118200s
+
+
+scale problem ...
+time elapsed:0.00722800s
+
+
+
+init model ...
+state_size:138496
+grid:0
+state_size:26880
+grid:0
+time elapsed:0.06863100s
+
+
+
+calling sgd_update_k128() ...
+update_per_sec:630441925.972908
+SGD_TRAIN_SECONDS: 1.018343 for 40 iters (k=128)
+scale model ...
+time elapsed:0.00293900s
+
+
+
+save_model() is called
+saving feature p(138493)...
+saving feature q(26744)...
+time elapsed:0.05298000s
+
+training application finished...
+
+

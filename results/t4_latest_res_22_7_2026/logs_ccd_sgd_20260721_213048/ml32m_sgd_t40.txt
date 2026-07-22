@@ -1,0 +1,61 @@
+k          :128
+num_workers:512
+u_grid     :1
+v_grid     :1
+x_grid     :1
+y_grid     :1
+ux         :1
+vy         :1
+num_iters  :40
+gpu        :0
+lambda_p   :0.05000
+lambda_q   :0.05000
+lrate      :0.00000
+alpha      :0.0800
+beta       :0.3000
+tr_path    :/content/scratch/conv/ml32m/sgd/train.bin
+va_path    :
+model_path :/tmp/aprccdsgd_33whvbot/ml32m.model.t40
+read_problem called
+m:200948, n:84431, nnz:25677530
+time elapsed:2.15229000s
+shuffle problem ...
+time elapsed:0.06692500s
+
+
+
+grid problem ...
+swapping ...
+grid swap time:0.60725400s
+
+
+scale problem ...
+time elapsed:0.03424500s
+
+
+
+init model ...
+state_size:200960
+grid:0
+state_size:84480
+grid:0
+time elapsed:0.16032700s
+
+
+
+calling sgd_update_k128() ...
+update_per_sec:431199658.096981
+SGD_TRAIN_SECONDS: 2.501581 for 40 iters (k=128)
+scale model ...
+time elapsed:0.01267200s
+
+
+
+save_model() is called
+saving feature p(200948)...
+saving feature q(84431)...
+time elapsed:0.11456000s
+
+training application finished...
+
+

@@ -74,6 +74,14 @@
 #ifndef CUMF_INIT
 #define CUMF_INIT 0
 #endif
+// BALS_SYMTILE (2026-07-21): swap the FP32 Gram kernel for the BALS/cuMF-style
+// symmetric register-tiled mapping (dx=dy=4, only the lower-triangular K*K
+// tiles computed, symmetric write-out). This is the mapping the BALS paper uses
+// to run FASTER than cuMF_ALS; the default kernel (compute_LHS_RHS_BALS_block)
+// is the faithful-but-slow 2x2/full-matrix baseline. -DBALS_SYMTILE=1 to enable.
+#ifndef BALS_SYMTILE
+#define BALS_SYMTILE 0
+#endif
 
 #if WEIGHTED_LAMBDA
 // cumf_als parity (als.cu "weighted-lambda regularization"):
@@ -94,6 +102,10 @@ __global__ void add_weighted_lambda_diag(float* __restrict__ d_LHS_all,
     int n = d_nnz[batch_start + e];
     d_LHS_all[(long long)e * K * K + (long long)d * K + d] += lambda * (n > 0 ? n : 1);
 }
+#endif
+
+#if CHOL_MP != 0 || CHOL_STALE
+#error "only_scalar_fp32.cu is the FP32 baseline of record — it is deliberately NOT wired for CHOL_MP/CHOL_STALE. Build it without those flags (a CHOL_MP build here would silently keep the FP32 solver and mislabel the run)."
 #endif
 
 int main(int argc, char* argv[]) {
@@ -144,6 +156,75 @@ int main(int argc, char* argv[]) {
         cerr << "ERROR: Please run 'preprocess' on the CSV first and pass the .bin file to this program!" << endl;
         return 1;
     }
+
+#ifndef BALS_REORDER
+#define BALS_REORDER 0
+#endif
+#if BALS_REORDER
+    {
+        // BALS data reordering (Chen et al. TPDS'21, Algorithm 3): sort rows
+        // (users) and columns (items) in DESCENDING order of train nonzeros so
+        // the nonzeros cluster toward the top-left of R. This makes scattered
+        // vacant row-segments coalesce into whole vacant tiles (skipped once
+        // instead of probed per segment) and raises column-vector reuse inside
+        // dense tiles. The permutation is a bijection over users/items, so the
+        // learned factors and the test RMSE are unchanged — only the tile
+        // structure (and thus speed) changes. Toggle with -DBALS_REORDER=1.
+        vector<int> u_nnz(num_users, 0), i_nnz(num_items, 0);
+        for (int k = 0; k < nnz_train; k++) { u_nnz[raw_users[k]]++; i_nnz[raw_items[k]]++; }
+        vector<int> newToOldU(num_users), newToOldI(num_items);
+        for (int i = 0; i < num_users; i++) newToOldU[i] = i;
+        for (int i = 0; i < num_items; i++) newToOldI[i] = i;
+        stable_sort(newToOldU.begin(), newToOldU.end(),
+                    [&](int a, int b){ return u_nnz[a] > u_nnz[b]; });
+        stable_sort(newToOldI.begin(), newToOldI.end(),
+                    [&](int a, int b){ return i_nnz[a] > i_nnz[b]; });
+        vector<int> oldToNewU(num_users), oldToNewI(num_items);
+        for (int r = 0; r < num_users; r++) oldToNewU[newToOldU[r]] = r;
+        for (int r = 0; r < num_items; r++) oldToNewI[newToOldI[r]] = r;
+
+        // Remap train + test COO into the reordered id space.
+        for (int k = 0; k < nnz_train; k++) {
+            raw_users[k] = oldToNewU[raw_users[k]];
+            raw_items[k] = oldToNewI[raw_items[k]];
+        }
+        for (int k = 0; k < nnz_test; k++) {
+            test_users_h[k] = oldToNewU[test_users_h[k]];
+            test_items_h[k] = oldToNewI[test_items_h[k]];
+        }
+
+        // Rebuild CSR (user-major) from the remapped train COO.
+        h_user_offsets.assign(num_users + 1, 0);
+        for (int k = 0; k < nnz_train; k++) h_user_offsets[raw_users[k] + 1]++;
+        for (int u = 0; u < num_users; u++) h_user_offsets[u + 1] += h_user_offsets[u];
+        h_item_indices.assign(nnz_train, 0); h_user_ratings.assign(nnz_train, 0.0f);
+        {
+            vector<int> cur(h_user_offsets.begin(), h_user_offsets.end() - 1);
+            for (int k = 0; k < nnz_train; k++) {
+                int p = cur[raw_users[k]]++;
+                h_item_indices[p] = raw_items[k];
+                h_user_ratings[p] = raw_ratings[k];
+            }
+        }
+        // Rebuild CSC (item-major).
+        h_item_offsets.assign(num_items + 1, 0);
+        for (int k = 0; k < nnz_train; k++) h_item_offsets[raw_items[k] + 1]++;
+        for (int i = 0; i < num_items; i++) h_item_offsets[i + 1] += h_item_offsets[i];
+        h_user_indices.assign(nnz_train, 0); h_item_ratings.assign(nnz_train, 0.0f);
+        {
+            vector<int> cur(h_item_offsets.begin(), h_item_offsets.end() - 1);
+            for (int k = 0; k < nnz_train; k++) {
+                int p = cur[raw_items[k]]++;
+                h_user_indices[p] = raw_users[k];
+                h_item_ratings[p] = raw_ratings[k];
+            }
+        }
+        printf("[BALS_REORDER] Alg.3 applied: rows/cols sorted by descending nnz "
+               "(max u_nnz=%d, max i_nnz=%d)\n",
+               *max_element(u_nnz.begin(), u_nnz.end()),
+               *max_element(i_nnz.begin(), i_nnz.end()));
+    }
+#endif
 
     int K         = K_DIM;
     float lambda  = (argc > 2) ? atof(argv[2]) : 0.1f;
@@ -432,6 +513,48 @@ int main(int argc, char* argv[]) {
     };
 #endif
 
+    // UNIFORM smem carveout for every kernel in the batch pipeline (see
+    // main_experiment.cu for the Ampere reconfig-barrier rationale). Defined
+    // before the geometry branch so both Gram kernels can use it.
+    auto set_max_shared = [](const void* f) {
+        cudaFuncSetAttribute(f, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+    };
+    int g_row_split;      // gridDim.y (row-split) — shared by launch macro + banner
+    int rows_per_thread;  // rows each thread-plane sequences (RPT); dispatch key below
+
+#if BALS_SYMTILE
+    // ===== BALS symmetric-tile Gram mapping (dx=dy=4, lower triangle only) =====
+    // Each ACTIVE thread owns one 4x4 output sub-tile; only NB*(NB+1)/2 tiles
+    // (NB=K/4) are computed (symmetry) and written to both halves. RPT is fixed
+    // at 1 (DZ*ROW_SPLIT = XB) so the register accumulator is just 4*4+4 floats
+    // — no spill. DZ = largest power of two keeping padded_threads*DZ <= 1024
+    // and dividing XB; ROW_SPLIT (gridDim.y) covers the remaining XB rows.
+#ifndef SYM_DX_VAL
+#define SYM_DX_VAL 4
+#endif
+    const int SYM_DX = SYM_DX_VAL;
+    int sym_nb  = K / SYM_DX;
+    int sym_nt  = sym_nb * (sym_nb + 1) / 2;                // lower-tri tiles per row
+    int sym_ntp = ((sym_nt + 31) / 32) * 32;                // pad active-thread count to a warp
+    int sym_dz  = 1;                                        // rows processed concurrently (z-planes)
+    while ((sym_dz * 2) <= XB && (long long)sym_ntp * (sym_dz * 2) <= 1024) sym_dz *= 2;
+    while (XB % sym_dz != 0) sym_dz /= 2;
+    g_row_split     = XB / sym_dz;                          // gridDim.y; RPT=1 so DZ*ROW_SPLIT=XB
+    rows_per_thread = 1;
+    dim3 lhs_threads_bals(sym_ntp, 1, sym_dz);
+    printf("BALS_SYMTILE mapping: dx=dy=%d  nb=%d  tiles/row=%d  padded_threads=%d  DZ=%d  ROW_SPLIT=%d  block=%d\n",
+           SYM_DX, sym_nb, sym_nt, sym_ntp, sym_dz, g_row_split, sym_ntp * sym_dz);
+
+    #define LAUNCH_FUSED_KERNEL(blocks, RPT_VAL, num_ents, d_TilePtr, d_TileCol, d_SegPtr, d_SegCol, d_SegVal, d_Feat, d_LHS, d_RHS, d_Dens, d_NzList, d_NzPtr, d_JobTx, d_JobChunk, d_JobNch, bstart, bsize) \
+        compute_LHS_RHS_BALS_symtile<1, SYM_DX_VAL><<<dim3((unsigned)(blocks), g_row_split), lhs_threads_bals, shared_mem_size, sC>>>( \
+            num_ents, K, lambda, \
+            d_TilePtr, d_TileCol, d_SegPtr, d_SegCol, d_SegVal, \
+            d_Feat, d_LHS, d_RHS, d_Dens, d_NzList, d_NzPtr, \
+            d_JobTx, d_JobChunk, d_JobNch, bstart, bsize)
+
+    cudaFuncSetAttribute((const void*)compute_LHS_RHS_BALS_symtile<1, SYM_DX_VAL>, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_size);
+    set_max_shared((const void*)compute_LHS_RHS_BALS_symtile<1, SYM_DX_VAL>);
+#else
     // Scalar kernel thread geometry — identical to main_experiment.cu
     // (see its RR_C / ROW_SPLIT rationale comments)
     #define RR_C ((K_DIM==48 || K_DIM==96) ? 3 : 2)
@@ -455,10 +578,11 @@ int main(int argc, char* argv[]) {
         cout << "Error: ROW_SPLIT=" << ROW_SPLIT << " incompatible with DZ=" << DZ << endl;
         return 1;
     }
-    int rows_per_thread = XB / (DZ * ROW_SPLIT);
+    g_row_split     = ROW_SPLIT;
+    rows_per_thread = XB / (DZ * ROW_SPLIT);
 
     #define LAUNCH_FUSED_KERNEL(blocks, RPT_VAL, num_ents, d_TilePtr, d_TileCol, d_SegPtr, d_SegCol, d_SegVal, d_Feat, d_LHS, d_RHS, d_Dens, d_NzList, d_NzPtr, d_JobTx, d_JobChunk, d_JobNch, bstart, bsize) \
-        compute_LHS_RHS_BALS_block<RPT_VAL, RR_C, RC_C><<<dim3((unsigned)(blocks), ROW_SPLIT), lhs_threads_bals, shared_mem_size, sC>>>( \
+        compute_LHS_RHS_BALS_block<RPT_VAL, RR_C, RC_C><<<dim3((unsigned)(blocks), g_row_split), lhs_threads_bals, shared_mem_size, sC>>>( \
             num_ents, K, lambda, \
             d_TilePtr, d_TileCol, d_SegPtr, d_SegCol, d_SegVal, \
             d_Feat, d_LHS, d_RHS, d_Dens, d_NzList, d_NzPtr, \
@@ -471,18 +595,13 @@ int main(int argc, char* argv[]) {
     cudaFuncSetAttribute((const void*)compute_LHS_RHS_BALS_block<16, RR_C, RC_C>, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_size);
     cudaFuncSetAttribute((const void*)compute_LHS_RHS_BALS_block<32, RR_C, RC_C>, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_size);
 
-    // UNIFORM smem carveout for every kernel in the batch pipeline (see
-    // main_experiment.cu for the Ampere reconfig-barrier rationale). Same
-    // set as there, minus the WMMA/convert kernels that no longer launch.
-    auto set_max_shared = [](const void* f) {
-        cudaFuncSetAttribute(f, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
-    };
     set_max_shared((const void*)compute_LHS_RHS_BALS_block<1, RR_C, RC_C>);
     set_max_shared((const void*)compute_LHS_RHS_BALS_block<2, RR_C, RC_C>);
     set_max_shared((const void*)compute_LHS_RHS_BALS_block<4, RR_C, RC_C>);
     set_max_shared((const void*)compute_LHS_RHS_BALS_block<8, RR_C, RC_C>);
     set_max_shared((const void*)compute_LHS_RHS_BALS_block<16, RR_C, RC_C>);
     set_max_shared((const void*)compute_LHS_RHS_BALS_block<32, RR_C, RC_C>);
+#endif
     set_max_shared((const void*)compute_RMSE_kernel);
 #if K_DIM <= BATCHED_CHOLESKY_MAX_K
     // batched solver: zero smem, its per-thread local matrix lives on L1 —
@@ -769,7 +888,7 @@ int main(int argc, char* argv[]) {
     printf("Params: K_DIM=%d, lambda=%.4f (%s), XB=%d, YB=%d (yb_eff=%d), ENTITY_BATCH_SIZE=%d, ROW_SPLIT=%d, BATCHED_CHOLESKY_MAX_K=%d, MAX_ITERS=%d\n",
            K_DIM, lambda,
            WEIGHTED_LAMBDA ? "weighted ALS-WR: diag += nnz_e*lambda" : "plain: diag += lambda",
-           XB, YB, yb_eff, ENTITY_BATCH_SIZE, ROW_SPLIT, BATCHED_CHOLESKY_MAX_K, MAX_ITERS);
+           XB, YB, yb_eff, ENTITY_BATCH_SIZE, g_row_split, BATCHED_CHOLESKY_MAX_K, MAX_ITERS);
 
     cudaMemcpy(h_X.data(), d_X, sizeof(float) * num_users * K, cudaMemcpyDeviceToHost);
     cudaMemcpy(h_Y.data(), d_Y, sizeof(float) * num_items * K, cudaMemcpyDeviceToHost);

@@ -1,0 +1,45 @@
+=== CODE VERSION: SCALAR-FP32-ONLY (from SYNC-2026-07-06) [baseline leg of main_experiment.cu, no WMMA/FP16 launches] ===
+Regularization: WEIGHTED lambda (ALS-WR, cumf_als-style: diag += nnz_e*lambda)
+Init: legacy U(0.1,1.1) (CUMF_INIT=0)
+Loading binary preprocessed dataset: /content/ratings32.bin
+200948 users, 84432 items | train=25677530, test=6322674
+[BALS_REORDER] Alg.3 applied: rows/cols sorted by descending nnz (max u_nnz=26666, max i_nnz=83026)
+User: 382793 nonzero tiles out of 2072400 (81.5% skipped)
+Item: 390501 nonzero tiles out of 2071615 (81.1% skipped)
+User density stats: min=0.000000 max=0.736328 avg=0.001510 nonzero=382793/2072400
+  Nonzero percentiles: p25=0.000122 p50=0.000488 p75=0.002319 p90=0.013306 p99=0.166260
+Item density stats: min=0.000000 max=0.764282 avg=0.001508 nonzero=390501/2071615
+  Nonzero percentiles: p25=0.000122 p50=0.000366 p75=0.002197 p90=0.012817 p99=0.165283
+Load balancing: User jobs=50591 (from 6280 tile-rows), Item jobs=49916 (from 2639 tile-rows)
+Weighted-lambda: empty entities (get plain lambda): users=0, items=4182
+BALS_SYMTILE mapping: dx=dy=4  nb=8  tiles/row=36  padded_threads=64  DZ=16  ROW_SPLIT=2  block=1024
+GPU memory after setup: 12494 MB free / 14913 MB total | LHS buffers=2
+
+=== FP32 Baseline (BALS — all tiles FP32, scalar-only, WEIGHTED lambda like cumf_als) ===
+Iter  5 | Train RMSE: 0.677608 | Test RMSE: 0.781054
+Iter 10 | Train RMSE: 0.664111 | Test RMSE: 0.770874
+Iter 15 | Train RMSE: 0.660049 | Test RMSE: 0.767494
+Iter 20 | Train RMSE: 0.658245 | Test RMSE: 0.765821
+Iter 25 | Train RMSE: 0.657313 | Test RMSE: 0.764883
+Converged at iteration 25 (train delta=0.000932 < tol=0.001)
+
+=== Profiling: FP32 Baseline (BALS — all tiles FP32, scalar-only, WEIGHTED lambda like cumf_als) (25 iters) ===
+User LHS+RHS: 3049.97 ms total | 122.00 ms/iter |  235.7 GFlops/s
+User Cholesky: 347.62 ms total | 13.90 ms/iter
+Item LHS+RHS: 2996.93 ms total | 119.88 ms/iter |  239.9 GFlops/s
+Item Cholesky: 140.34 ms total |  5.61 ms/iter
+RMSE:           62.81 ms total | 12.56 ms/call
+(Cholesky overlaps next batch's LHS+RHS on a 2nd stream; LHS+RHS rows = EXPOSED time = phase span minus solve busy time, so their GFlops/s overstates pure kernel throughput. Totals remain exact.)
+Total FLOPs: 1437.94 GFLOPs | Throughput: 217.9 GFlops/s (compute: 220.0)
+Training Complete in 6.601 seconds!
+
+╔══════════════════════════════════════════════════════════════╗
+║        SCALAR FP32 BASELINE — single run  (80/20 split)     ║
+╠══════════════════════════════════════════════════════════════╣
+║  Compute time:              6534.85 ms                      ║
+║  Wall time:                 6600.80 ms                      ║
+╠══════════════════════════════════════════════════════════════╣
+║  Train RMSE:             0.657313                          ║
+║  Test  RMSE:             0.764883                          ║
+╚══════════════════════════════════════════════════════════════╝
+Params: K_DIM=32, lambda=0.0480 (weighted ALS-WR: diag += nnz_e*lambda), XB=32, YB=256 (yb_eff=256), ENTITY_BATCH_SIZE=60000, ROW_SPLIT=2, BATCHED_CHOLESKY_MAX_K=16, MAX_ITERS=50

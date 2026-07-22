@@ -1,0 +1,18 @@
+read_problem:/tmp/claude-1000/-home-pc-Desktop-2007080-latent-factorr-experimen/21b4a089-b675-4fc0-96a8-1a179a2a72ae/scratchpad/conv/ml20m/sgd/test.bin
+m:138493, n:26738, nnz:3947336
+mf_load_model called
+fun: 0
+m:   138493
+n:   26744
+k:   128
+b:   3.351
+p_size:17727104
+loading feature p m:138493 ...
+progress:%0.000
+loading feature q n:26744 ...
+progress:%0.000
+time elapsed:0.04955900s
+
+calculating rmse ...
+RMSE = 0.7891
+time elapsed:0.21523800s

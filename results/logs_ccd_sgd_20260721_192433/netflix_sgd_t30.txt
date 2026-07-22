@@ -1,0 +1,61 @@
+k          :128
+num_workers:512
+u_grid     :1
+v_grid     :1
+x_grid     :1
+y_grid     :1
+ux         :1
+vy         :1
+num_iters  :30
+gpu        :0
+lambda_p   :0.05000
+lambda_q   :0.05000
+lrate      :0.00000
+alpha      :0.0800
+beta       :0.3000
+tr_path    :/tmp/claude-1000/-home-pc-Desktop-2007080-latent-factorr-experimen/21b4a089-b675-4fc0-96a8-1a179a2a72ae/scratchpad/conv/netflix/sgd/train.bin
+va_path    :
+model_path :/tmp/aprccdsgd_k_bi46r6/netflix.model.t30
+read_problem called
+m:480189, n:17770, nnz:80570989
+time elapsed:2.09484400s
+shuffle problem ...
+time elapsed:0.07104500s
+
+
+
+grid problem ...
+swapping ...
+grid swap time:0.21422400s
+
+
+scale problem ...
+time elapsed:0.03880700s
+
+
+
+init model ...
+state_size:480256
+grid:0
+state_size:17920
+grid:0
+time elapsed:0.21344500s
+
+
+
+calling sgd_update_k128() ...
+update_per_sec:547967272.897093
+SGD_TRAIN_SECONDS: 4.409983 for 30 iters (k=128)
+scale model ...
+time elapsed:0.01009700s
+
+
+
+save_model() is called
+saving feature p(480189)...
+saving feature q(17770)...
+time elapsed:0.16350700s
+
+training application finished...
+
+

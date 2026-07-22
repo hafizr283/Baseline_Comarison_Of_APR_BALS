@@ -1,0 +1,9 @@
+# Build artifacts left over from compiling/running the vendored external baselines
+cumf_ccd-master/*.o
+cumf_ccd-master/**/*.o
+cumf_ccd-master/ccdp_gpu
+cumf_sgd-master/**/*.o
+cumf_sgd-master/singleGPU/cumf_sgd
+cumf_sgd-master/test/mf-train
+cumf_sgd-master/test/mf-predict
+cumf_sgd-master/train.bin.model

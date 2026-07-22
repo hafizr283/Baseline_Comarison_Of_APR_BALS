@@ -1,0 +1,129 @@
+════════════════════════════════════════════════════════════════════════
+ justapr (APR-BALS, ship recipe) vs cuMF-ALS — GPU=1 arch=sm_86 lambda=0.048
+ datasets: ml10m ml20m ml32m netflix
+ K/F pairs: 16 32 48 64 96 / 20 30 50 60 100 | protocol: RMSE %5, tol 0.001, max 50
+ Started: Mon Jul 20 08:39:58 PM +06 2026
+════════════════════════════════════════════════════════════════════════
+
+── dataset: ml10m  (/home/pc/Desktop/2007080/ratings10.bin) ──
+  K=16 justapr ✓  test 0.785922 (25 it, 0.124s)
+  K=32 justapr ✓  test 0.782250 (25 it, 0.243s)
+  K=48 justapr ✓  test 0.781442 (25 it, 0.394s)
+  K=64 justapr ✓  test 0.780856 (25 it, 0.762s)
+  K=96 justapr ✓  test 0.779772 (25 it, 1.401s)
+  F=20 cuMF ✓  test nan (20 it, 0.655s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=30 cuMF ✓  test nan (20 it, 0.847s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=50 cuMF ✓  test nan (20 it, 1.481s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=60 cuMF ✓  test nan (25 it, 2.390s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=100 cuMF ✓  test nan (25 it, 4.885s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+
+  table (ml10m):
+  | rank  | code                        | iters | wall s   | ms/iter  | train RMSE | test RMSE |
+  |-------|-----------------------------|-------|----------|----------|------------|-----------|
+  | K=16  | justapr APR-BALS (ship)     | 25    | 0.124    | 5        | 0.703249   | 0.785922  |
+  | F=20  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 0.655    | 33       | 0.688144   | nan       |
+  | K=32  | justapr APR-BALS (ship)     | 25    | 0.243    | 10       | 0.658560   | 0.782250  |
+  | F=30  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 0.847    | 42       | 0.661905   | nan       |
+  | K=48  | justapr APR-BALS (ship)     | 25    | 0.394    | 16       | 0.632140   | 0.781442  |
+  | F=50  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 1.481    | 74       | 0.629165   | nan       |
+  | K=64  | justapr APR-BALS (ship)     | 25    | 0.762    | 30       | 0.614083   | 0.780856  |
+  | F=60  | cuMF-ALS (HPDC16, FP32+CG)  | 25    | 2.390    | 96       | 0.617293   | nan       |
+  | K=96  | justapr APR-BALS (ship)     | 25    | 1.401    | 56       | 0.590879   | 0.779772  |
+  | F=100 | cuMF-ALS (HPDC16, FP32+CG)  | 25    | 4.885    | 195      | 0.588948   | nan       |
+
+── dataset: ml20m  (/home/pc/Desktop/2007080/ratings.bin) ──
+  K=16 justapr ✓  test 0.777714 (25 it, 0.273s)
+  K=32 justapr ✓  test 0.771938 (25 it, 0.522s)
+  K=48 justapr ✓  test 0.770598 (25 it, 0.854s)
+  K=64 justapr ✓  test 0.769624 (25 it, 1.623s)
+  K=96 justapr ✓  test 0.768571 (25 it, 3.135s)
+  F=20 cuMF ✓  test nan (20 it, 1.398s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=30 cuMF ✓  test nan (20 it, 1.845s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=50 cuMF ✓  test nan (20 it, 3.233s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=60 cuMF ✓  test nan (20 it, 4.202s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=100 cuMF ✓  test nan (25 it, 10.697s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+
+  table (ml20m):
+  | rank  | code                        | iters | wall s   | ms/iter  | train RMSE | test RMSE |
+  |-------|-----------------------------|-------|----------|----------|------------|-----------|
+  | K=16  | justapr APR-BALS (ship)     | 25    | 0.273    | 11       | 0.698714   | 0.777714  |
+  | F=20  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 1.398    | 70       | 0.684030   | nan       |
+  | K=32  | justapr APR-BALS (ship)     | 25    | 0.522    | 21       | 0.657732   | 0.771938  |
+  | F=30  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 1.845    | 92       | 0.660228   | nan       |
+  | K=48  | justapr APR-BALS (ship)     | 25    | 0.854    | 34       | 0.634730   | 0.770598  |
+  | F=50  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 3.233    | 162      | 0.631839   | nan       |
+  | K=64  | justapr APR-BALS (ship)     | 25    | 1.623    | 65       | 0.619182   | 0.769624  |
+  | F=60  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 4.202    | 210      | 0.622203   | nan       |
+  | K=96  | justapr APR-BALS (ship)     | 25    | 3.135    | 125      | 0.599712   | 0.768571  |
+  | F=100 | cuMF-ALS (HPDC16, FP32+CG)  | 25    | 10.697   | 428      | 0.597892   | nan       |
+
+── dataset: ml32m  (/home/pc/Desktop/2007080/ratings32.bin) ──
+  K=16 justapr ✓  test 0.771123 (25 it, 0.498s)
+  K=32 justapr ✓  test 0.762760 (25 it, 0.972s)
+  K=48 justapr ✓  test 0.760124 (25 it, 1.627s)
+  K=64 justapr ✓  test 0.759106 (25 it, 3.078s)
+  K=96 justapr ✓  test 0.757926 (25 it, 6.498s)
+  F=20 cuMF ✓  test nan (20 it, 2.309s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=30 cuMF ✓  test nan (20 it, 3.077s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=50 cuMF ✓  test nan (20 it, 5.412s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=60 cuMF ✓  test nan (20 it, 7.049s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+  F=100 cuMF ✓  test nan (25 it, 17.977s)
+    ⚠ cuMF test RMSE is nan (dataset has 0-train entities; no empty-entity guard)
+
+  table (ml32m):
+  | rank  | code                        | iters | wall s   | ms/iter  | train RMSE | test RMSE |
+  |-------|-----------------------------|-------|----------|----------|------------|-----------|
+  | K=16  | justapr APR-BALS (ship)     | 25    | 0.498    | 20       | 0.694725   | 0.771123  |
+  | F=20  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 2.309    | 115      | 0.680292   | nan       |
+  | K=32  | justapr APR-BALS (ship)     | 25    | 0.972    | 39       | 0.656329   | 0.762760  |
+  | F=30  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 3.077    | 154      | 0.658346   | nan       |
+  | K=48  | justapr APR-BALS (ship)     | 25    | 1.627    | 65       | 0.635500   | 0.760124  |
+  | F=50  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 5.412    | 271      | 0.632756   | nan       |
+  | K=64  | justapr APR-BALS (ship)     | 25    | 3.078    | 123      | 0.622087   | 0.759106  |
+  | F=60  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 7.049    | 352      | 0.624371   | nan       |
+  | K=96  | justapr APR-BALS (ship)     | 25    | 6.498    | 260      | 0.605407   | 0.757926  |
+  | F=100 | cuMF-ALS (HPDC16, FP32+CG)  | 25    | 17.977   | 719      | 0.603644   | nan       |
+
+── dataset: netflix  (/home/pc/Desktop/2007080/netflix_ratings.bin) ──
+  K=16 justapr ✓  test 0.831057 (20 it, 1.066s)
+  K=32 justapr ✓  test 0.823282 (20 it, 1.931s)
+  K=48 justapr ✓  test 0.820479 (20 it, 3.035s)
+  K=64 justapr ✓  test 0.819080 (20 it, 5.410s)
+  K=96 justapr ✓  test 0.817560 (20 it, 9.349s)
+  F=20 cuMF ✓  test 0.828840 (15 it, 5.478s)
+  F=30 cuMF ✓  test 0.824093 (20 it, 9.960s)
+  F=50 cuMF ✓  test 0.820556 (20 it, 16.528s)
+  F=60 cuMF ✓  test 0.819547 (20 it, 21.375s)
+  F=100 cuMF ✓  test 0.817480 (20 it, 41.987s)
+
+  table (netflix):
+  | rank  | code                        | iters | wall s   | ms/iter  | train RMSE | test RMSE |
+  |-------|-----------------------------|-------|----------|----------|------------|-----------|
+  | K=16  | justapr APR-BALS (ship)     | 20    | 1.066    | 53       | 0.782323   | 0.831057  |
+  | F=20  | cuMF-ALS (HPDC16, FP32+CG)  | 15    | 5.478    | 365      | 0.771220   | 0.828840  |
+  | K=32  | justapr APR-BALS (ship)     | 20    | 1.931    | 97       | 0.752649   | 0.823282  |
+  | F=30  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 9.960    | 498      | 0.753987   | 0.824093  |
+  | K=48  | justapr APR-BALS (ship)     | 20    | 3.035    | 152      | 0.736522   | 0.820479  |
+  | F=50  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 16.528   | 826      | 0.734113   | 0.820556  |
+  | K=64  | justapr APR-BALS (ship)     | 20    | 5.410    | 270      | 0.726029   | 0.819080  |
+  | F=60  | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 21.375   | 1069     | 0.727628   | 0.819547  |
+  | K=96  | justapr APR-BALS (ship)     | 20    | 9.349    | 467      | 0.712921   | 0.817560  |
+  | F=100 | cuMF-ALS (HPDC16, FP32+CG)  | 20    | 41.987   | 2099     | 0.711636   | 0.817480  |
+
+Finished : Mon Jul 20 08:46:32 PM +06 2026
+Summary  : results/JUSTAPR_VS_CUMF_20260720_203958.txt
+Full logs: results/logs_justapr_vs_cumf_20260720_203958/

@@ -1,0 +1,18 @@
+read_problem:/content/scratch/conv/ml32m/sgd/test.bin
+m:200948, n:84432, nnz:6322674
+mf_load_model called
+fun: 0
+m:   200948
+n:   84431
+k:   128
+b:   3.344
+p_size:25721344
+loading feature p m:200948 ...
+progress:%0.000
+loading feature q n:84431 ...
+progress:%0.000
+time elapsed:0.11872500s
+
+calculating rmse ...
+RMSE = 0.7841
+time elapsed:0.94407800s

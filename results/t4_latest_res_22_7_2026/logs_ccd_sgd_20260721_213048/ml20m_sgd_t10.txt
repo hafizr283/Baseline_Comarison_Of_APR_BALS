@@ -1,0 +1,61 @@
+k          :128
+num_workers:384
+u_grid     :1
+v_grid     :1
+x_grid     :1
+y_grid     :1
+ux         :1
+vy         :1
+num_iters  :10
+gpu        :0
+lambda_p   :0.05000
+lambda_q   :0.05000
+lrate      :0.00000
+alpha      :0.0800
+beta       :0.3000
+tr_path    :/content/scratch/conv/ml20m/sgd/train.bin
+va_path    :
+model_path :/tmp/aprccdsgd_33whvbot/ml20m.model.t10
+read_problem called
+m:138493, n:26744, nnz:16052927
+time elapsed:1.29625100s
+shuffle problem ...
+time elapsed:0.02982900s
+
+
+
+grid problem ...
+swapping ...
+grid swap time:0.28324500s
+
+
+scale problem ...
+time elapsed:0.02000100s
+
+
+
+init model ...
+state_size:138496
+grid:0
+state_size:26880
+grid:0
+time elapsed:0.06941500s
+
+
+
+calling sgd_update_k128() ...
+update_per_sec:334930000.918021
+SGD_TRAIN_SECONDS: 0.479395 for 10 iters (k=128)
+scale model ...
+time elapsed:0.00754300s
+
+
+
+save_model() is called
+saving feature p(138493)...
+saving feature q(26744)...
+time elapsed:0.05862000s
+
+training application finished...
+
+

@@ -18,9 +18,11 @@ __global__ void build_ptr_array(float** __restrict__ ptrs, float* __restrict__ b
 }
 #endif
 
-__global__ void cholesky_solve_cooperative(float* __restrict__ d_LHS_all, float* __restrict__ d_X, int K, int num_entities, float lambda) {
+__global__ void cholesky_solve_cooperative(float* __restrict__ d_LHS_all, float* __restrict__ d_X, int K, int num_entities, float lambda,
+                                           const int* __restrict__ d_nnz_w = nullptr) {
     int ent = blockIdx.x;
     if (ent >= num_entities) return;
+    if (d_nnz_w) { int n = d_nnz_w[ent]; lambda = lambda * (n > 0 ? n : 1); }   // fused weighted-λ (07-21)
 
     extern __shared__ float sMem[];
     float* sA = sMem;
@@ -99,9 +101,11 @@ __global__ void cholesky_solve_cooperative(float* __restrict__ d_LHS_all, float*
 // nearly doubling occupancy at K=64 (6 warps/SM → ~11 warps/SM).
 // Also eliminates 32-way bank conflicts in the forward/backward solve.
 template <int K>
-__global__ void cholesky_solve_packed(float* __restrict__ d_LHS_all, float* __restrict__ d_X, int num_entities, float lambda) {
+__global__ void cholesky_solve_packed(float* __restrict__ d_LHS_all, float* __restrict__ d_X, int num_entities, float lambda,
+                                      const int* __restrict__ d_nnz_w = nullptr) {
     int ent = blockIdx.x;
     if (ent >= num_entities) return;
+    if (d_nnz_w) { int n = d_nnz_w[ent]; lambda = lambda * (n > 0 ? n : 1); }   // fused weighted-λ (07-21)
 
     constexpr int NT = K * (K + 1) / 2;
     extern __shared__ float sMem[];
@@ -361,12 +365,19 @@ inline void build_cholesky_tile_map(int K, std::vector<int2>& map, int& nvec) {
 template <int K, int NTHREADS>
 __global__ void cholesky_solve_tiled(const float* __restrict__ d_LHS_all, float* __restrict__ d_X,
                                      const int2* __restrict__ d_map, int nvec, int ntot,
-                                     int num_entities, float lambda) {
+                                     int num_entities, float lambda,
+                                     const int* __restrict__ d_nnz_w = nullptr) {
     constexpr int NT  = K / CHOL_TS;
     constexpr int NTT = NT * (NT + 1) / 2;
 
     int ent = blockIdx.x;
     if (ent >= num_entities) return;
+    // Fused weighted-λ (07-21): with d_nnz_w set, the per-entity λ·nnz diag
+    // add happens here instead of a separate RMW kernel over the 2.2 GB LHS
+    // buffer (was 27 ms/iter at K=96). Same fp32 add on the same fp32 value
+    // → bit-identical to the two-kernel sequence.
+    float lam = lambda;
+    if (d_nnz_w) { int n = d_nnz_w[ent]; lam = lambda * (n > 0 ? n : 1); }
 
     extern __shared__ float sMem[];
     float* sA   = sMem;                    // NTT tiles, stride-17 rows
@@ -392,7 +403,7 @@ __global__ void cholesky_solve_tiled(const float* __restrict__ d_LHS_all, float*
     for (int i = tid; i < K; i += NTHREADS) sb[i] = d_X[ent * K + i];
     __syncthreads();
     for (int i = tid; i < K; i += NTHREADS)
-        sA[chol_tofs(i >> 4, i >> 4) + (i & 15) * (CHOL_TSTR + 1)] += lambda;
+        sA[chol_tofs(i >> 4, i >> 4) + (i & 15) * (CHOL_TSTR + 1)] += lam;
     __syncthreads();
 
     if (tid < 32) chol_potrf16_w0(sA, invD, tid);   // prologue: POTRF(0)
@@ -531,10 +542,532 @@ __global__ void cholesky_solve_tiled(const float* __restrict__ d_LHS_all, float*
     for (int i = tid; i < K; i += NTHREADS) d_X[ent * K + i] = sb[i];
 }
 
+// ── Mixed-precision tiled Cholesky (SYNC-2026-07-20, EXPERIMENT) ────────────
+// cholesky_solve_tiled_mp<K,NTH,ST>: same five-idea tiled structure as
+// cholesky_solve_tiled above, but the factor tiles (sA) live in shared memory
+// as ST ∈ {__nv_bfloat16, __half} while ALL register math, the RHS (sb) and
+// the diagonal inverses (invD) stay FP32. Rationale + occupancy math: see
+// CHOL_MP in common.cuh and FIXLOG SYNC-2026-07-20. Compiled only when
+// CHOL_MP != 0 — the FP32 production kernel above is untouched.
+//
+// Precision notes (for whoever validates this):
+//  * This is NOT textbook "Cholesky in half precision": the trailing matrix
+//    is stored 16-bit too, so every panel's SYRK update ROUNDS the trailing
+//    A to ST. Effective factor error ~ u_ST * (K/16 panels), worse than a
+//    plain 16-bit factor. That is the price of halving smem — the whole
+//    point of the experiment.
+//  * FP16 (u=2^-11) is MORE accurate than BF16 (u=2^-8); BF16's win is
+//    range (no overflow). κ(A)·u < 1 needed for refinement to converge:
+//    κ≈500 estimated -> FP16 comfortably converges, BF16 is borderline.
+//    Hence the test order in FIXLOG: FP16-noref first.
+//  * Non-finite solves (FP16 overflow / breakdown) are zeroed (the entity
+//    keeps a zero factor vector for one iteration, self-heals next iter,
+//    RMSE stays finite) and counted once per entity-solve in *d_fail.
+#if CHOL_MP != 0
+
+__device__ __forceinline__ float chol_ld(const float* p)         { return *p; }
+__device__ __forceinline__ float chol_ld(const __half* p)        { return __half2float(*p); }
+__device__ __forceinline__ void  chol_st(float* p, float v)      { *p = v; }
+__device__ __forceinline__ void  chol_st(__half* p, float v)     { *p = __float2half(v); }
+#if CHOL_MP == 1
+__device__ __forceinline__ float chol_ld(const __nv_bfloat16* p) { return __bfloat162float(*p); }
+__device__ __forceinline__ void  chol_st(__nv_bfloat16* p, float v) { *p = __float2bfloat16(v); }
+#endif
+
+// Bytes of dynamic smem: 16-bit tiles + fp32 sb/invD (+ fp32 residual buffer
+// when refining). Tile block is NTT*272*sizeof(ST); 272*2 = 544 = 4*136, so
+// the fp32 arrays that follow stay 4-byte aligned for every NTT.
+template <int K, typename ST>
+constexpr int cholesky_tiled_smem_mp() {
+    return (K / CHOL_TS) * (K / CHOL_TS + 1) / 2 * CHOL_TFL * (int)sizeof(ST)
+         + (K + (K / CHOL_TS) * CHOL_TS + (CHOL_REFINE ? K : 0)) * (int)sizeof(float);
+}
+
+// potrf16 on warp 0, ST tile storage / FP32 math. invD gets the inverse of
+// the ROUNDED stored diagonal so trisolves and factor stay consistent.
+template <typename ST>
+__device__ __forceinline__ void chol_potrf16_w0_mp(ST* sD, float* iD, int lane) {
+    for (int j = 0; j < CHOL_TS; j++) {
+        float x = (lane < j) ? chol_ld(sD + j * CHOL_TSTR + lane) : 0.0f;
+        float dp = x * x;
+        for (int off = 8; off > 0; off >>= 1) dp += __shfl_down_sync(0xffffffff, dp, off, 16);
+        if (lane == 0) {
+            float s = chol_ld(sD + j * (CHOL_TSTR + 1)) - dp;
+            s = (s > 1e-10f) ? sqrtf(s) : 1e-5f;
+            chol_st(sD + j * (CHOL_TSTR + 1), s);
+            iD[j] = 1.0f / chol_ld(sD + j * (CHOL_TSTR + 1));
+        }
+        __syncwarp();
+        float inv = iD[j];
+        int i = j + 1 + lane;
+        if (i < CHOL_TS) {
+            float v = chol_ld(sD + i * CHOL_TSTR + j);
+            for (int k = 0; k < j; k++) v -= chol_ld(sD + i * CHOL_TSTR + k) * chol_ld(sD + j * CHOL_TSTR + k);
+            chol_st(sD + i * CHOL_TSTR + j, v * inv);
+        }
+        __syncwarp();
+    }
+}
+
+// Forward solve L·v' = v on the factored tile image. Uses the L11^-T rows
+// stashed in the diagonal tiles' upper halves: L^-1[i][r] = L^-T[r][i] =
+// sD[r*17+i] for r<i, diag = invD — so each tile-column is one parallel
+// 16-wide matvec + a fully parallel rows-below update (no serial
+// substitution). Ends fully synchronized.
+template <int K, int NTHREADS, typename ST>
+__device__ __forceinline__ void chol_tiled_fwd(const ST* sA, const float* invD, float* v, int tid) {
+    constexpr int NT = K / CHOL_TS;
+    for (int C = 0; C < NT; C++) {
+        if (tid < 32) {
+            const ST* sD = sA + chol_tofs(C, C);
+            float yi = 0.0f;
+            if (tid < CHOL_TS) {
+                yi = invD[C * CHOL_TS + tid] * v[C * CHOL_TS + tid];
+                for (int r = 0; r < tid; r++)
+                    yi += chol_ld(sD + r * CHOL_TSTR + tid) * v[C * CHOL_TS + r];
+            }
+            __syncwarp();
+            if (tid < CHOL_TS) v[C * CHOL_TS + tid] = yi;
+        }
+        __syncthreads();
+        for (int i = (C + 1) * CHOL_TS + tid; i < K; i += NTHREADS) {
+            const ST* Lr = sA + chol_tofs(i >> 4, C) + (i & 15) * CHOL_TSTR;
+            float dp = 0.0f;
+            #pragma unroll
+            for (int k = 0; k < CHOL_TS; k++) dp += chol_ld(Lr + k) * v[C * CHOL_TS + k];
+            v[i] -= dp;
+        }
+        __syncthreads();
+    }
+}
+
+// Backward solve L^T·v' = v — identical structure to the FP32 kernel's
+// backward phase (per tile-column matvec with invD + upper-half rows, then
+// rows-above update). Ends fully synchronized.
+template <int K, int NTHREADS, typename ST>
+__device__ __forceinline__ void chol_tiled_bwd(const ST* sA, const float* invD, float* v, int tid) {
+    constexpr int NT = K / CHOL_TS;
+    for (int C = NT - 1; C >= 0; C--) {
+        if (tid < 32) {
+            const ST* sD = sA + chol_tofs(C, C);
+            float xi = 0.0f;
+            if (tid < CHOL_TS) {
+                xi = invD[C * CHOL_TS + tid] * v[C * CHOL_TS + tid];
+                for (int c = tid + 1; c < CHOL_TS; c++)
+                    xi += chol_ld(sD + tid * CHOL_TSTR + c) * v[C * CHOL_TS + c];
+            }
+            __syncwarp();
+            if (tid < CHOL_TS) v[C * CHOL_TS + tid] = xi;
+        }
+        __syncthreads();
+        for (int i = tid; i < C * CHOL_TS; i += NTHREADS) {
+            const ST* Lc = sA + chol_tofs(C, i >> 4);
+            float dp = 0.0f;
+            #pragma unroll
+            for (int k = 0; k < CHOL_TS; k++) dp += chol_ld(Lc + k * CHOL_TSTR + (i & 15)) * v[C * CHOL_TS + k];
+            v[i] -= dp;
+        }
+        __syncthreads();
+    }
+}
+
+// FP32 residual r = b − (A+λI)·x against the entity's gmem LHS. ONLY the
+// upper triangle of the gmem LHS is valid (mirror store removed 07-03):
+// row i takes j>=i from A[i][j], j<i from A[j][i] by symmetry. In
+// WEIGHTED_LAMBDA builds the λ·nnz term is already baked into the gmem diag
+// and lambda arrives as 0 — consistent in both regularization modes.
+// dA/db are the ENTITY-base pointers. Caller must __syncthreads() after.
+template <int K, int NTHREADS>
+__device__ __forceinline__ void chol_residual_fp32(const float* __restrict__ dA,
+                                                   const float* __restrict__ db,
+                                                   const float* x, float lambda,
+                                                   float* r, int tid) {
+    for (int i = tid; i < K; i += NTHREADS) {
+        const float* Arow = dA + i * K;
+        float acc = db[i] - lambda * x[i];
+        for (int j = i; j < K; j++) acc -= Arow[j] * x[j];
+        for (int j = 0; j < i; j++) acc -= dA[j * K + i] * x[j];
+        r[i] = acc;
+    }
+}
+
+#if CHOL_STALE
+// Elements per entity in the L cache: the full tile image, unpadded —
+// lower/diag tiles of L plus the L11^-T upper halves land in exactly
+// NTT*16*16 slots (nothing is wasted: off-diagonal tiles of L are full).
 template <int K>
-__global__ void cholesky_solve_batched(float* __restrict__ d_LHS_all, float* __restrict__ d_X, int num_entities, float lambda) {
+__host__ __device__ constexpr int chol_cache_elems() { return (K / CHOL_TS) * (K / CHOL_TS + 1) / 2 * CHOL_TS * CHOL_TS; }
+#endif
+
+// d_ent_list/d_ent_cnt (optional, default off): list-driven re-solve mode for
+// the residual-gated stale path — block b solves entity d_ent_list[b], grid
+// is launched at worst-case size and blocks past *d_ent_cnt exit immediately
+// (count is device-side, so the launch stays stream-ordered with no host
+// sync; same pattern cost as the 07-04d dead-launch note).
+template <int K, int NTHREADS, typename ST>
+__global__ void cholesky_solve_tiled_mp(const float* __restrict__ d_LHS_all, float* __restrict__ d_X,
+                                        const int2* __restrict__ d_map, int nvec, int ntot,
+                                        int num_entities, float lambda,
+                                        int* __restrict__ d_fail, ST* __restrict__ d_Lcache,
+                                        const int* __restrict__ d_ent_list = nullptr,
+                                        const int* __restrict__ d_ent_cnt = nullptr,
+                                        const int* __restrict__ d_nnz_w = nullptr) {
+    constexpr int NT  = K / CHOL_TS;
+    constexpr int NTT = NT * (NT + 1) / 2;
+
+    int ent = blockIdx.x;
+    if (d_ent_list) {
+        if (ent >= *d_ent_cnt) return;
+        ent = d_ent_list[ent];
+    } else if (ent >= num_entities) return;
+    // Fused weighted-λ (07-21). The 16-bit tiles round on the smem store, so
+    // the diag add must NOT go through a fp16 round-trip: with d_nnz_w set,
+    // the diag pass below re-reads the fp32 gmem value, adds λ·nnz in fp32,
+    // and converts once — fl16(fl32(A+λn)), bit-identical to the retired
+    // pre-add kernel. lam also feeds the refine residual (gmem no longer
+    // carries the λ term).
+    float lam = lambda;
+    if (d_nnz_w) { int n = d_nnz_w[ent]; lam = lambda * (n > 0 ? n : 1); }
+
+    extern __shared__ unsigned char sRawMP[];
+    ST*    sA   = (ST*)sRawMP;                                     // NTT tiles, stride-17 rows, 16-bit
+    float* sb   = (float*)(sRawMP + NTT * CHOL_TFL * sizeof(ST));  // K — RHS/solution, FP32
+    float* invD = sb + K;                                          // NT*16 — diag inverses, FP32
+#if CHOL_REFINE
+    float* sr   = invD + NT * CHOL_TS;                             // K — residual/correction, FP32
+#endif
+    __shared__ int sBad;
+
+    const int tid = threadIdx.x;
+    if (tid == 0) sBad = 0;
+    const long long lhs_base = (long long)ent * K * K;
+    const float4* src4 = (const float4*)(d_LHS_all + lhs_base);
+
+    // Same float4 load map as the FP32 kernel; values are rounded to ST on
+    // the smem store (conversion is register-side, gmem traffic unchanged).
+    for (int idx = tid; idx < ntot; idx += NTHREADS) {
+        int2 m = d_map[idx];
+        if (idx < nvec) {
+            float4 v = src4[m.x];
+            chol_st(sA + m.y,                 v.x);
+            chol_st(sA + m.y +     CHOL_TSTR, v.y);
+            chol_st(sA + m.y + 2 * CHOL_TSTR, v.z);
+            chol_st(sA + m.y + 3 * CHOL_TSTR, v.w);
+        } else {
+            chol_st(sA + m.y, d_LHS_all[lhs_base + m.x]);
+        }
+    }
+    for (int i = tid; i < K; i += NTHREADS) sb[i] = d_X[ent * K + i];
+    __syncthreads();
+    for (int i = tid; i < K; i += NTHREADS) {
+        ST* dg = sA + chol_tofs(i >> 4, i >> 4) + (i & 15) * (CHOL_TSTR + 1);
+        if (d_nnz_w) chol_st(dg, d_LHS_all[lhs_base + (long long)i * K + i] + lam);
+        else         chol_st(dg, chol_ld(dg) + lambda);
+        // Overflow gate on the STORED diag. An FP16 inf diag does not go NaN:
+        // iD becomes 1/inf = 0 and every column silently zeroes — the final
+        // non-finite check never fires and the fail counter lies. A is Gram
+        // (|a_ij| <= sqrt(a_ii*a_jj)), so any entry overflowing 16-bit range
+        // implies a diag overflow: checking the K diag slots catches it all.
+        float dv = chol_ld(dg);
+        if (dv != dv || dv > 1e30f || dv < -1e30f) sBad = 1;
+    }
+    __syncthreads();
+    if (sBad) {
+        if (tid == 0 && d_fail) atomicAdd(d_fail, 1);
+        for (int i = tid; i < K; i += NTHREADS) d_X[ent * K + i] = 0.0f;
+        return;
+    }
+
+    if (tid < 32) chol_potrf16_w0_mp(sA, invD, tid);   // prologue: POTRF(0)
+    __syncthreads();
+
+    for (int p = 0; p < NT; p++) {
+        ST*    sD = sA + chol_tofs(p, p);
+        float* iD = invD + p * CHOL_TS;
+
+        // TRSM(p): panel rows + b-row (fp32, lives in sb) + 16 identity rows
+        // (solutions = rows of L11^-T -> upper half of the diagonal tile).
+        int nrows = (NT - 1 - p) * CHOL_TS;
+        for (int t = tid; t < nrows + 1 + CHOL_TS; t += NTHREADS) {
+            float a[CHOL_TS];
+            ST* rowS = nullptr;
+            int irow = t - nrows - 1;
+            if (t < nrows) {
+                rowS = sA + chol_tofs(p + 1 + (t >> 4), p) + (t & 15) * CHOL_TSTR;
+                #pragma unroll
+                for (int c = 0; c < CHOL_TS; c++) a[c] = chol_ld(rowS + c);
+            } else if (t == nrows) {
+                #pragma unroll
+                for (int c = 0; c < CHOL_TS; c++) a[c] = sb[p * CHOL_TS + c];
+            } else {
+                #pragma unroll
+                for (int c = 0; c < CHOL_TS; c++) a[c] = (c == irow) ? 1.0f : 0.0f;
+            }
+            #pragma unroll
+            for (int c = 0; c < CHOL_TS; c++) {
+                float v = a[c];
+                #pragma unroll
+                for (int k = 0; k < c; k++) v -= a[k] * chol_ld(sD + c * CHOL_TSTR + k);
+                a[c] = v * iD[c];
+            }
+            if (rowS) {
+                #pragma unroll
+                for (int c = 0; c < CHOL_TS; c++) chol_st(rowS + c, a[c]);
+            } else if (t == nrows) {
+                #pragma unroll
+                for (int c = 0; c < CHOL_TS; c++) sb[p * CHOL_TS + c] = a[c];
+            } else {
+                #pragma unroll
+                for (int c = 0; c < CHOL_TS; c++)
+                    if (c > irow) chol_st(sD + irow * CHOL_TSTR + c, a[c]);
+            }
+        }
+        __syncthreads();
+
+        if (p + 1 < NT) {
+            // SYRK-a: tile(p+1,p+1) + b-segment (what POTRF(p+1) needs).
+            const ST* Pn = sA + chol_tofs(p + 1, p);
+            ST*       Dn = sA + chol_tofs(p + 1, p + 1);
+            for (int e = tid; e < 64; e += NTHREADS) {
+                int r0 = (e >> 3) * 2, c0 = (e & 7) * 2;
+                const ST *a0 = Pn + r0 * CHOL_TSTR, *a1 = a0 + CHOL_TSTR;
+                const ST *b0 = Pn + c0 * CHOL_TSTR, *b1 = b0 + CHOL_TSTR;
+                float s00 = 0, s01 = 0, s10 = 0, s11 = 0;
+                #pragma unroll
+                for (int k = 0; k < CHOL_TS; k++) {
+                    float x0 = chol_ld(a0 + k), x1 = chol_ld(a1 + k);
+                    float y0 = chol_ld(b0 + k), y1 = chol_ld(b1 + k);
+                    s00 += x0 * y0; s01 += x0 * y1; s10 += x1 * y0; s11 += x1 * y1;
+                }
+                chol_st(Dn + r0 * CHOL_TSTR + c0,           chol_ld(Dn + r0 * CHOL_TSTR + c0)           - s00);
+                chol_st(Dn + r0 * CHOL_TSTR + c0 + 1,       chol_ld(Dn + r0 * CHOL_TSTR + c0 + 1)       - s01);
+                chol_st(Dn + (r0 + 1) * CHOL_TSTR + c0,     chol_ld(Dn + (r0 + 1) * CHOL_TSTR + c0)     - s10);
+                chol_st(Dn + (r0 + 1) * CHOL_TSTR + c0 + 1, chol_ld(Dn + (r0 + 1) * CHOL_TSTR + c0 + 1) - s11);
+            }
+            for (int i = (p + 1) * CHOL_TS + tid; i < (p + 2) * CHOL_TS; i += NTHREADS) {
+                const ST* Lr = Pn + (i & 15) * CHOL_TSTR;
+                float dp = 0.0f;
+                #pragma unroll
+                for (int k = 0; k < CHOL_TS; k++) dp += chol_ld(Lr + k) * sb[p * CHOL_TS + k];
+                sb[i] -= dp;
+            }
+            __syncthreads();
+
+            // warp 0: POTRF(p+1)  ∥  tid>=32: SYRK-b + b-tail rows.
+            if (tid < 32) {
+                chol_potrf16_w0_mp(sA + chol_tofs(p + 1, p + 1), invD + (p + 1) * CHOL_TS, tid);
+            } else {
+                int m = NT - 1 - p;
+                int wtid = tid - 32, wn = NTHREADS - 32;
+                for (int e = wtid; e < m * (m + 1) / 2 * 64 - 64; e += wn) {
+                    int t = (e >> 6) + 1;   // skip tile 0 = (p+1,p+1), done in SYRK-a
+                    int r0 = ((e >> 3) & 7) * 2, c0 = (e & 7) * 2;
+                    int Rp = 0;
+                    while ((Rp + 1) * (Rp + 2) / 2 <= t) Rp++;
+                    int Cp = t - Rp * (Rp + 1) / 2;
+                    const ST* P1 = sA + chol_tofs(p + 1 + Rp, p);
+                    const ST* P2 = sA + chol_tofs(p + 1 + Cp, p);
+                    const ST *a0 = P1 + r0 * CHOL_TSTR, *a1 = a0 + CHOL_TSTR;
+                    const ST *b0 = P2 + c0 * CHOL_TSTR, *b1 = b0 + CHOL_TSTR;
+                    float s00 = 0, s01 = 0, s10 = 0, s11 = 0;
+                    #pragma unroll
+                    for (int k = 0; k < CHOL_TS; k++) {
+                        float x0 = chol_ld(a0 + k), x1 = chol_ld(a1 + k);
+                        float y0 = chol_ld(b0 + k), y1 = chol_ld(b1 + k);
+                        s00 += x0 * y0; s01 += x0 * y1; s10 += x1 * y0; s11 += x1 * y1;
+                    }
+                    ST* D = sA + chol_tofs(p + 1 + Rp, p + 1 + Cp);
+                    chol_st(D + r0 * CHOL_TSTR + c0,           chol_ld(D + r0 * CHOL_TSTR + c0)           - s00);
+                    chol_st(D + r0 * CHOL_TSTR + c0 + 1,       chol_ld(D + r0 * CHOL_TSTR + c0 + 1)       - s01);
+                    chol_st(D + (r0 + 1) * CHOL_TSTR + c0,     chol_ld(D + (r0 + 1) * CHOL_TSTR + c0)     - s10);
+                    chol_st(D + (r0 + 1) * CHOL_TSTR + c0 + 1, chol_ld(D + (r0 + 1) * CHOL_TSTR + c0 + 1) - s11);
+                }
+                for (int i = (p + 2) * CHOL_TS + wtid; i < K; i += wn) {
+                    const ST* Lr = sA + chol_tofs(i >> 4, p) + (i & 15) * CHOL_TSTR;
+                    float dp = 0.0f;
+                    #pragma unroll
+                    for (int k = 0; k < CHOL_TS; k++) dp += chol_ld(Lr + k) * sb[p * CHOL_TS + k];
+                    sb[i] -= dp;
+                }
+            }
+            __syncthreads();
+        }
+    }
+
+    // Backward solve (identical tile-column matvec structure to FP32 kernel).
+    chol_tiled_bwd<K, NTHREADS, ST>(sA, invD, sb, tid);
+
+    // Breakdown / FP16-overflow guard: zero the entity's solution (keeps the
+    // run finite; the entity self-heals on the next ALS iteration) and count.
+    // (v != v catches NaN; the magnitude test catches ±inf. Deliberately not
+    // isfinite(): ambiguous in device code under `using namespace std`.)
+    for (int i = tid; i < K; i += NTHREADS) {
+        float v = sb[i];
+        if (v != v || v > 1e30f || v < -1e30f) sBad = 1;
+    }
+    __syncthreads();
+    if (sBad) {
+        if (tid == 0 && d_fail) atomicAdd(d_fail, 1);
+        for (int i = tid; i < K; i += NTHREADS) d_X[ent * K + i] = 0.0f;
+        return;
+    }
+
+#if CHOL_REFINE
+    // One FP32 iterative-refinement step: d_X still holds b (final store is
+    // below), the gmem LHS still holds fp32 A — residual is true FP32.
+    chol_residual_fp32<K, NTHREADS>(d_LHS_all + lhs_base, d_X + ent * K, sb, lam, sr, tid);
+    __syncthreads();
+    chol_tiled_fwd<K, NTHREADS, ST>(sA, invD, sr, tid);
+    chol_tiled_bwd<K, NTHREADS, ST>(sA, invD, sr, tid);
+    for (int i = tid; i < K; i += NTHREADS) sb[i] += sr[i];
+#endif
+
+#if CHOL_STALE
+    // Export the tile image (L lower/diag + L11^-T upper halves) to the
+    // per-entity cache, unpadded, coalesced on the gmem side. d_Lcache is
+    // the BATCH-base pointer (host pre-offsets by bstart).
+    if (d_Lcache) {
+        ST* dst = d_Lcache + (long long)ent * chol_cache_elems<K>();
+        for (int idx = tid; idx < chol_cache_elems<K>(); idx += NTHREADS) {
+            int t = idx >> 8, off = idx & 255;
+            dst[idx] = sA[t * CHOL_TFL + (off >> 4) * CHOL_TSTR + (off & 15)];
+        }
+    }
+#endif
+
+    for (int i = tid; i < K; i += NTHREADS) d_X[ent * K + i] = sb[i];
+}
+
+#if CHOL_STALE
+// Bytes of dynamic smem for the stale-refine kernel: tiles + sb/invD/sr.
+template <int K, typename ST>
+constexpr int cholesky_stale_smem() {
+    return (K / CHOL_TS) * (K / CHOL_TS + 1) / 2 * CHOL_TFL * (int)sizeof(ST)
+         + 3 * K * (int)sizeof(float);
+}
+
+// Stale-L solve: NO factorization. x0 from trisolves with the CACHED L
+// (previous fresh iteration), then ONE FP32 refinement step against the
+// FRESH A that the LHS kernels built this iteration. FLOPs ~ 4 trisolves +
+// 1 matvec ≈ K^3/8 vs K^3/3 + panel skeleton for the full factorization;
+// gmem ~ cache (2B/elem) + b + one sweep of the fp32 LHS for the residual.
+// If Y drifted too far since the last refresh this degrades to a bad
+// preconditioner — watch train RMSE between refreshes (see FIXLOG).
+// Residual gate (d_bad_list non-null): after x0, the FP32 residual r=b−Ax0 is
+// already computed for the IR step — if ||r||² > τ²·||b||² (or non-finite)
+// the stale L is a bad preconditioner for THIS entity this iteration: skip
+// the IR, leave b untouched in d_X, and append the entity to d_bad_list; the
+// caller then runs the full mp solve on just that list (which also refreshes
+// the entity's cache slot). This is the per-entity adaptive refresh — the
+// fixed-cadence version measured-dead 07-20b (divergence cascade).
+template <int K, int NTHREADS, typename ST>
+__global__ void cholesky_stale_refine(const float* __restrict__ d_LHS_all, float* __restrict__ d_X,
+                                      const ST* __restrict__ d_Lcache,
+                                      int num_entities, float lambda, int* __restrict__ d_fail,
+                                      int* __restrict__ d_bad_cnt = nullptr,
+                                      int* __restrict__ d_bad_list = nullptr,
+                                      int* __restrict__ d_bad_total = nullptr,
+                                      float tau = 0.5f,
+                                      const int* __restrict__ d_nnz_w = nullptr) {
+    constexpr int NT  = K / CHOL_TS;
+    constexpr int NTT = NT * (NT + 1) / 2;
+
+    int ent = blockIdx.x;
+    if (ent >= num_entities) return;
+    // Fused weighted-λ (07-21): residual needs the per-entity λ·nnz that the
+    // gmem LHS no longer carries.
+    float lam = lambda;
+    if (d_nnz_w) { int n = d_nnz_w[ent]; lam = lambda * (n > 0 ? n : 1); }
+
+    extern __shared__ unsigned char sRawSt[];
+    ST*    sA   = (ST*)sRawSt;
+    float* sb   = (float*)(sRawSt + NTT * CHOL_TFL * sizeof(ST));
+    float* invD = sb + K;
+    float* sr   = invD + K;
+    __shared__ int sBad;
+
+    const int tid = threadIdx.x;
+    if (tid == 0) sBad = 0;
+
+    const ST* src = d_Lcache + (long long)ent * chol_cache_elems<K>();
+    for (int idx = tid; idx < chol_cache_elems<K>(); idx += NTHREADS) {
+        int t = idx >> 8, off = idx & 255;
+        sA[t * CHOL_TFL + (off >> 4) * CHOL_TSTR + (off & 15)] = src[idx];
+    }
+    for (int i = tid; i < K; i += NTHREADS) sb[i] = d_X[ent * K + i];
+    __syncthreads();
+    // invD recomputed from the stored (rounded) diagonal — identical to what
+    // the exporting solve used, so factor and trisolves stay consistent.
+    for (int i = tid; i < K; i += NTHREADS)
+        invD[i] = 1.0f / chol_ld(sA + chol_tofs(i >> 4, i >> 4) + (i & 15) * (CHOL_TSTR + 1));
+    __syncthreads();
+
+    // x0 = (L_old L_old^T)^-1 b
+    chol_tiled_fwd<K, NTHREADS, ST>(sA, invD, sb, tid);
+    chol_tiled_bwd<K, NTHREADS, ST>(sA, invD, sb, tid);
+
+    // One refinement step against the FRESH A (d_X still holds b here).
+    chol_residual_fp32<K, NTHREADS>(d_LHS_all + (long long)ent * K * K, d_X + ent * K, sb, lam, sr, tid);
+    __syncthreads();
+
+    if (d_bad_list) {
+        __shared__ float sR2, sB2;
+        if (tid == 0) { sR2 = 0.0f; sB2 = 0.0f; }
+        __syncthreads();
+        float r2 = 0.0f, b2 = 0.0f;
+        for (int i = tid; i < K; i += NTHREADS) {
+            r2 += sr[i] * sr[i];
+            float bv = d_X[ent * K + i];
+            b2 += bv * bv;
+        }
+        atomicAdd(&sR2, r2); atomicAdd(&sB2, b2);
+        __syncthreads();
+        // negated form so a NaN residual also fails the gate
+        if (!(sR2 <= tau * tau * sB2)) {
+            if (tid == 0) {
+                int slot = atomicAdd(d_bad_cnt, 1);
+                d_bad_list[slot] = ent;
+                if (d_bad_total) atomicAdd(d_bad_total, 1);
+            }
+            return;   // d_X keeps b — the list re-solve reads it as the RHS
+        }
+    }
+
+    chol_tiled_fwd<K, NTHREADS, ST>(sA, invD, sr, tid);
+    chol_tiled_bwd<K, NTHREADS, ST>(sA, invD, sr, tid);
+    for (int i = tid; i < K; i += NTHREADS) sb[i] += sr[i];
+
+    for (int i = tid; i < K; i += NTHREADS) {
+        float v = sb[i];
+        if (v != v || v > 1e30f || v < -1e30f) sBad = 1;
+    }
+    __syncthreads();
+    if (sBad) {
+        if (tid == 0 && d_fail) atomicAdd(d_fail, 1);
+        for (int i = tid; i < K; i += NTHREADS) d_X[ent * K + i] = 0.0f;
+        return;
+    }
+    for (int i = tid; i < K; i += NTHREADS) d_X[ent * K + i] = sb[i];
+}
+#endif // CHOL_STALE
+#endif // CHOL_MP
+
+// Name of the tiled solver actually dispatched at this build's precision —
+// used by the .cu hosts for cudaFuncSetAttribute (carveout) calls.
+#if CHOL_MP == 0
+#define CHOL_TILED_SOLVER(KK, NTH) cholesky_solve_tiled<KK, NTH>
+#else
+#define CHOL_TILED_SOLVER(KK, NTH) cholesky_solve_tiled_mp<KK, NTH, chol_store_t>
+#endif
+
+template <int K>
+__global__ void cholesky_solve_batched(float* __restrict__ d_LHS_all, float* __restrict__ d_X, int num_entities, float lambda,
+                                       const int* __restrict__ d_nnz_w = nullptr) {
     int ent = blockIdx.x * blockDim.x + threadIdx.x;
     if (ent >= num_entities) return;
+    // Fused weighted-λ (07-21): same fp32 add as the retired pre-add kernel.
+    float lam = lambda;
+    if (d_nnz_w) { int n = d_nnz_w[ent]; lam = lambda * (n > 0 ? n : 1); }
 
     float A[K * K];
     float b[K];
@@ -548,7 +1081,7 @@ __global__ void cholesky_solve_batched(float* __restrict__ d_LHS_all, float* __r
     // loop measured ~40 ms/iter SLOWER at K=32 (broken vectorization).
     for (int i = 0; i < K * K; i++) A[i] = d_LHS_all[lhs_base + i];
     for (int i = 0; i < K; i++)     b[i] = d_X[rhs_base + i];
-    for (int i = 0; i < K; i++)     A[i * K + i] += lambda;
+    for (int i = 0; i < K; i++)     A[i * K + i] += lam;
 
     for (int j = 0; j < K; j++) {
         float s = A[j * K + j];
